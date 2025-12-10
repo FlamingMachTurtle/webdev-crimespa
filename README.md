@@ -1,7 +1,5 @@
 # St. Paul Crime SPA
 
-Single Page Application for St. Paul crime data.
-
 ## Setup
 
 ```bash
@@ -9,21 +7,16 @@ npm install
 npm run dev
 ```
 
-Dev server runs at `http://localhost:5173`
+Open `http://localhost:5173`
 
-## Documentation
+## Team Plan
 
-| Doc                                      | Description                          |
-| ---------------------------------------- | ------------------------------------ |
-| [docs/TASKS.md](docs/TASKS.md)           | **All tasks, owners, dependencies**  |
-| [docs/SPRINT.md](docs/SPRINT.md)         | Schedule by day                      |
-| [docs/API.md](docs/API.md)               | Endpoint reference                   |
-| [docs/ASSIGNMENT.md](docs/ASSIGNMENT.md) | Rubric reference                     |
+Open **[docs/dashboard.html](docs/dashboard.html)** in your browser for:
+- Task assignments and descriptions
+- Timeline
+- Progress tracking
+- Role picker
 
-## Team
+## Deadline
 
-| Member | Role        |
-| ------ | ----------- |
-| M1     | Backend/API |
-| M2     | Map/UI      |
-| M3     | Frontend    |
+**Friday, December 12 @ 10pm**
