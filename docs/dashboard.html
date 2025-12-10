@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>St. Paul Crime SPA - Team Plan</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0a0e27;
+            color: #e4e4e7;
+            padding: 2rem;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
+        .subtitle { color: #a1a1aa; margin-bottom: 2rem; font-size: 0.95rem; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        .card h2 {
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            color: #fafafa;
+        }
+        .full-width { grid-column: 1 / -1; }
+        canvas { max-height: 300px; }
+        
+        /* Dependency Tree */
+        .dep-tree {
+            font-family: 'SF Mono', 'Consolas', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            background: #09090b;
+            padding: 1.5rem;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        .day-block {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #27272a;
+        }
+        .day-block:last-child { border-bottom: none; margin-bottom: 0; }
+        .day-title {
+            color: #fafafa;
+            font-weight: 700;
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .day-subtitle {
+            color: #71717a;
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+        }
+        .person-row {
+            display: grid;
+            grid-template-columns: 100px 1fr;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .person-name { font-weight: 600; }
+        .person-eli .person-name { color: #3b82f6; }
+        .person-caiden .person-name { color: #8b5cf6; }
+        .person-charlotte .person-name { color: #ec4899; }
+        .task-list { color: #d4d4d8; }
+        .critical { color: #f59e0b; font-weight: 600; }
+        .done { color: #10b981; }
+        .waiting { color: #52525b; font-style: italic; }
+        
+        /* Timeline */
+        .timeline { padding: 1rem 0; }
+        .timeline-header {
+            display: grid;
+            grid-template-columns: 80px repeat(6, 1fr);
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.75rem;
+            color: #71717a;
+            font-weight: 600;
+        }
+        .timeline-row {
+            display: grid;
+            grid-template-columns: 80px repeat(6, 1fr);
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .timeline-name { font-weight: 600; font-size: 0.85rem; }
+        .timeline-cell {
+            background: #27272a;
+            border-radius: 6px;
+            padding: 0.5rem;
+            font-size: 0.7rem;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .eli-cell { background: #1e3a8a; }
+        .caiden-cell { background: #5b21b6; }
+        .charlotte-cell { background: #9d174d; }
+        .shared-cell { background: #065f46; }
+        .empty-cell { background: #18181b; color: #52525b; }
+        
+        /* Stats */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+        }
+        .stat {
+            background: #09090b;
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-value { font-size: 1.75rem; font-weight: 700; }
+        .stat-label { font-size: 0.8rem; color: #71717a; margin-top: 0.25rem; }
+        .eli-color { color: #3b82f6; }
+        .caiden-color { color: #8b5cf6; }
+        .charlotte-color { color: #ec4899; }
+        .done-color { color: #10b981; }
+        
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+            font-size: 0.85rem;
+        }
+        .legend-item { display: flex; align-items: center; gap: 0.5rem; }
+        .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Team Plan</h1>
+        <p class="subtitle">Due: Friday Dec 12 @ 10pm | Eli frontloads Wed, Caiden+Charlotte finish Thu/Fri</p>
+
+        <!-- Key Stats -->
+        <div class="card full-width" style="margin-bottom: 1.5rem;">
+            <div class="stats-row">
+                <div class="stat">
+                    <div class="stat-value eli-color">16</div>
+                    <div class="stat-label">Eli's points</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value caiden-color">8</div>
+                    <div class="stat-label">Caiden's points</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value charlotte-color">14</div>
+                    <div class="stat-label">Charlotte's points</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value done-color">7</div>
+                    <div class="stat-label">Already done</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" style="color: #f59e0b;">13</div>
+                    <div class="stat-label">Eli does Wed</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">45</div>
+                    <div class="stat-label">Total needed</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Dependency Flow -->
+            <div class="card full-width">
+                <h2>Dependency Flow</h2>
+                <div class="dep-tree">
+                    <div class="day-block">
+                        <div class="day-title">WEDNESDAY — Eli builds foundation</div>
+                        <div class="day-subtitle">Caiden & Charlotte prep UI shells while waiting for data</div>
+                        <div class="person-row person-eli">
+                            <div class="person-name">Eli</div>
+                            <div class="task-list">
+                                <span class="critical">A1: API connect</span> → 
+                                A2: neighborhoods → 
+                                A3: codes → 
+                                A4: incidents → 
+                                F1-F3: form
+                            </div>
+                        </div>
+                        <div class="person-row person-caiden">
+                            <div class="person-name">Caiden</div>
+                            <div class="task-list">C1: search input UI <span class="waiting">(then wait for data)</span></div>
+                        </div>
+                        <div class="person-row person-charlotte">
+                            <div class="person-name">Charlotte</div>
+                            <div class="task-list">E1-E3: filter UI shells, G1: bios <span class="waiting">(then wait for data)</span></div>
+                        </div>
+                    </div>
+                    
+                    <div class="day-block">
+                        <div class="day-title">THURSDAY — Caiden & Charlotte use the data</div>
+                        <div class="day-subtitle">Eli available to help or work on extras</div>
+                        <div class="person-row person-eli">
+                            <div class="person-name">Eli</div>
+                            <div class="task-list"><span class="waiting">Help / X1: delete button (extra)</span></div>
+                        </div>
+                        <div class="person-row person-caiden">
+                            <div class="person-name">Caiden</div>
+                            <div class="task-list">B3: markers + counts → C2: geocoding → C3: center map</div>
+                        </div>
+                        <div class="person-row person-charlotte">
+                            <div class="person-name">Charlotte</div>
+                            <div class="task-list">D1: crime table → D2: all columns → wire up filters</div>
+                        </div>
+                    </div>
+                    
+                    <div class="day-block">
+                        <div class="day-title">FRIDAY — Final pieces + video</div>
+                        <div class="day-subtitle">D3 needs Charlotte's table to exist first</div>
+                        <div class="person-row person-eli">
+                            <div class="person-name">Eli</div>
+                            <div class="task-list">D3: address lookup (after table ready)</div>
+                        </div>
+                        <div class="person-row person-caiden">
+                            <div class="person-name">Caiden</div>
+                            <div class="task-list"><span class="waiting">X2: crime markers (extra) / polish</span></div>
+                        </div>
+                        <div class="person-row person-charlotte">
+                            <div class="person-name">Charlotte</div>
+                            <div class="task-list"><span class="waiting">Polish / extras</span></div>
+                        </div>
+                        <div class="person-row" style="margin-top: 0.5rem;">
+                            <div class="person-name" style="color: #10b981;">ALL</div>
+                            <div class="task-list"><span class="done">G2: Record demo video @ 6pm → Submit by 10pm</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timeline -->
+            <div class="card full-width">
+                <h2>Timeline</h2>
+                <div class="timeline">
+                    <div class="timeline-header">
+                        <div></div>
+                        <div>Wed AM</div>
+                        <div>Wed PM</div>
+                        <div>Thu AM</div>
+                        <div>Thu PM</div>
+                        <div>Fri AM</div>
+                        <div>Fri PM</div>
+                    </div>
+                    <div class="timeline-row">
+                        <div class="timeline-name eli-color">Eli</div>
+                        <div class="timeline-cell eli-cell">A1, A2</div>
+                        <div class="timeline-cell eli-cell">A3, A4, F1-F3</div>
+                        <div class="timeline-cell empty-cell">help</div>
+                        <div class="timeline-cell empty-cell">help</div>
+                        <div class="timeline-cell eli-cell">D3</div>
+                        <div class="timeline-cell shared-cell">Video</div>
+                    </div>
+                    <div class="timeline-row">
+                        <div class="timeline-name caiden-color">Caiden</div>
+                        <div class="timeline-cell caiden-cell">C1</div>
+                        <div class="timeline-cell empty-cell">wait</div>
+                        <div class="timeline-cell caiden-cell">B3</div>
+                        <div class="timeline-cell caiden-cell">C2, C3</div>
+                        <div class="timeline-cell empty-cell">extras</div>
+                        <div class="timeline-cell shared-cell">Video</div>
+                    </div>
+                    <div class="timeline-row">
+                        <div class="timeline-name charlotte-color">Charlotte</div>
+                        <div class="timeline-cell charlotte-cell">E1-E3</div>
+                        <div class="timeline-cell charlotte-cell">G1</div>
+                        <div class="timeline-cell charlotte-cell">D1</div>
+                        <div class="timeline-cell charlotte-cell">D2</div>
+                        <div class="timeline-cell empty-cell">polish</div>
+                        <div class="timeline-cell shared-cell">Video</div>
+                    </div>
+                </div>
+                <div class="legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#1e3a8a"></div>Eli</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#5b21b6"></div>Caiden</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#9d174d"></div>Charlotte</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#065f46"></div>All</div>
+                </div>
+            </div>
+
+            <!-- Points Chart -->
+            <div class="card">
+                <h2>Points by Person</h2>
+                <canvas id="pointsChart"></canvas>
+            </div>
+
+            <!-- Task Count -->
+            <div class="card">
+                <h2>Tasks by Day</h2>
+                <canvas id="dayChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Task Lists -->
+        <div class="grid">
+            <div class="card">
+                <h2 style="color:#3b82f6">Eli's Tasks (16 pts)</h2>
+                <table style="width:100%; font-size:0.85rem; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Wed AM</td>
+                        <td>A1: API connect, A2: neighborhoods</td>
+                        <td style="text-align:right">4 pts</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Wed PM</td>
+                        <td>A3: codes, A4: incidents, F1-F3: form</td>
+                        <td style="text-align:right">9 pts</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0.5rem 0; color:#71717a">Fri AM</td>
+                        <td>D3: address lookup</td>
+                        <td style="text-align:right">3 pts</td>
+                    </tr>
+                </table>
+            </div>
+            <div class="card">
+                <h2 style="color:#8b5cf6">Caiden's Tasks (8 pts)</h2>
+                <table style="width:100%; font-size:0.85rem; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Wed</td>
+                        <td>C1: search input UI</td>
+                        <td style="text-align:right">2 pts</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Thu</td>
+                        <td>B3: markers, C2-C3: geocoding</td>
+                        <td style="text-align:right">6 pts</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0.5rem 0; color:#71717a">Fri</td>
+                        <td style="color:#71717a">X2: crime markers (extra)</td>
+                        <td style="text-align:right; color:#71717a">+5 pts</td>
+                    </tr>
+                </table>
+            </div>
+            <div class="card">
+                <h2 style="color:#ec4899">Charlotte's Tasks (14 pts)</h2>
+                <table style="width:100%; font-size:0.85rem; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Wed</td>
+                        <td>E1-E3: filter UI, G1: bios</td>
+                        <td style="text-align:right">6 pts</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #27272a;">
+                        <td style="padding:0.5rem 0; color:#71717a">Thu</td>
+                        <td>D1-D2: crime table, wire filters</td>
+                        <td style="text-align:right">7 pts</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0.5rem 0; color:#71717a">Fri</td>
+                        <td style="color:#71717a">Polish + help with video</td>
+                        <td style="text-align:right; color:#71717a">-</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        Chart.defaults.color = '#a1a1aa';
+        Chart.defaults.borderColor = '#27272a';
+
+        new Chart(document.getElementById('pointsChart'), {
+            type: 'doughnut',
+            data: {
+                labels: ['Eli (16)', 'Caiden (8)', 'Charlotte (14)', 'Done (7)'],
+                datasets: [{
+                    data: [16, 8, 14, 7],
+                    backgroundColor: ['#3b82f6', '#8b5cf6', '#ec4899', '#10b981'],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'bottom', labels: { padding: 15 } }
+                }
+            }
+        });
+
+        new Chart(document.getElementById('dayChart'), {
+            type: 'bar',
+            data: {
+                labels: ['Wed', 'Thu', 'Fri'],
+                datasets: [
+                    { label: 'Eli', data: [13, 0, 3], backgroundColor: '#3b82f6' },
+                    { label: 'Caiden', data: [2, 6, 0], backgroundColor: '#8b5cf6' },
+                    { label: 'Charlotte', data: [6, 7, 0], backgroundColor: '#ec4899' }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { stacked: true, grid: { display: false } },
+                    y: { stacked: true, beginAtZero: true, grid: { color: '#27272a' } }
+                },
+                plugins: {
+                    legend: { position: 'bottom', labels: { padding: 10 } }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
+

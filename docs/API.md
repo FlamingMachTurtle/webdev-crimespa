@@ -62,13 +62,13 @@ GET /incidents?code=110,120&neighborhood=1,2,3&limit=500
 
 **Query Parameters:**
 
-| Param | Type | Description |
-|-------|------|-------------|
-| start_date | string | YYYY-MM-DD format |
-| end_date | string | YYYY-MM-DD format |
-| code | string | Comma-separated crime codes |
+| Param        | Type   | Description                      |
+| ------------ | ------ | -------------------------------- |
+| start_date   | string | YYYY-MM-DD format                |
+| end_date     | string | YYYY-MM-DD format                |
+| code         | string | Comma-separated crime codes      |
 | neighborhood | string | Comma-separated neighborhood IDs |
-| limit | number | Max results (default: 1000) |
+| limit        | number | Max results (default: 1000)      |
 
 **Response:**
 ```json
@@ -112,16 +112,16 @@ Content-Type: application/json
 
 **Required Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| case_number | string | Unique case ID |
-| date | string | YYYY-MM-DD |
-| time | string | HH:MM:SS |
-| code | number | Crime code |
-| incident | string | Crime description |
-| police_grid | number | Grid number |
-| neighborhood_number | number | 1-17 |
-| block | string | Street address block |
+| Field               | Type   | Description          |
+| ------------------- | ------ | -------------------- |
+| case_number         | string | Unique case ID       |
+| date                | string | YYYY-MM-DD           |
+| time                | string | HH:MM:SS             |
+| code                | number | Crime code           |
+| incident            | string | Crime description    |
+| police_grid         | number | Grid number          |
+| neighborhood_number | number | 1-17                 |
+| block               | string | Street address block |
 
 **Response:**
 ```json
