@@ -3,6 +3,12 @@ import { reactive, ref, onMounted } from 'vue'
 
 let crime_url = ref('');
 let dialog_err = ref(false);
+
+// data from api - filled after user enters url
+let codes = ref([]);
+let neighborhoods = ref([]);
+let incidents = ref([]);
+
 let map = reactive(
     {
         leaflet: null,
@@ -68,10 +74,34 @@ onMounted(() => {
 
 
 // FUNCTIONS
-// Function called once user has entered REST API URL
+// called after user enters api url and clicks ok
 function initializeCrimes() {
-    // TODO: get code and neighborhood data
-    //       get initial 1000 crimes
+    // remove trailing slash if user added one
+    let api = crime_url.value.replace(/\/+$/, '');
+    
+    // grab crime codes from api
+    fetch(api + '/codes')
+        .then(res => res.json())
+        .then(data => { 
+            codes.value = data;
+            console.log('codes loaded:', data.length);
+        });
+
+    // grab neighborhood list  
+    fetch(api + '/neighborhoods')
+        .then(res => res.json())
+        .then(data => {
+            neighborhoods.value = data;
+            console.log('neighborhoods loaded:', data.length);
+        });
+
+    // grab last 1000 crimes - newest first
+    fetch(api + '/incidents?limit=1000')
+        .then(res => res.json())
+        .then(data => {
+            incidents.value = data;
+            console.log('incidents loaded:', data.length);
+        });
 }
 
 // Function called when user presses 'OK' on dialog box

@@ -11,10 +11,6 @@ dist/
 *.swo
 .DS_Store
 
-# Planning docs (for local reference only)
-docs/TASKS.md
-docs/SPRINT.md
-docs/EMAIL.md
-docs/ASSIGNMENT.md
-docs/API.md
+# Planning docs (keep dashboard.html, ignore markdown planning files)
+docs/*.md
 
