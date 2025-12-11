@@ -9,6 +9,21 @@ let codes = ref([]);
 let neighborhoods = ref([]);
 let incidents = ref([]);
 
+// new incident form data
+let newIncident = reactive({
+    case_number: '',
+    date: '',
+    time: '',
+    code: '',
+    incident: '',
+    police_grid: '',
+    neighborhood_number: '',
+    block: ''
+});
+let form_error = ref('');
+let form_success = ref(false);
+let form_visible = ref(false); // controls if form is shown or hidden
+
 let map = reactive(
     {
         leaflet: null,
@@ -104,6 +119,60 @@ function initializeCrimes() {
         });
 }
 
+// submit new incident to api
+function submitIncident() {
+    // check all fields filled
+    if (!newIncident.case_number || !newIncident.date || !newIncident.time ||
+        !newIncident.code || !newIncident.incident || !newIncident.police_grid ||
+        !newIncident.neighborhood_number || !newIncident.block) {
+        form_error.value = 'fill out all fields';
+        return;
+    }
+    
+    form_error.value = '';
+    form_success.value = false;
+    let api = crime_url.value.replace(/\/+$/, '');
+    
+    // send to api
+    fetch(api + '/new-incident', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            case_number: newIncident.case_number,
+            date: newIncident.date,
+            time: newIncident.time,
+            code: Number(newIncident.code),
+            incident: newIncident.incident,
+            police_grid: Number(newIncident.police_grid),
+            neighborhood_number: Number(newIncident.neighborhood_number),
+            block: newIncident.block
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        console.log('incident added:', data);
+        form_success.value = true;
+        // clear form
+        newIncident.case_number = '';
+        newIncident.date = '';
+        newIncident.time = '';
+        newIncident.code = '';
+        newIncident.incident = '';
+        newIncident.police_grid = '';
+        newIncident.neighborhood_number = '';
+        newIncident.block = '';
+    })
+    .catch(err => {
+        form_error.value = 'failed to add incident';
+        console.log('error:', err);
+    });
+}
+
+// show or hide the incident form
+function toggleForm() {
+    form_visible.value = !form_visible.value;
+}
+
 // Function called when user presses 'OK' on dialog box
 function closeDialog() {
     let dialog = document.getElementById('rest-dialog');
@@ -128,40 +197,207 @@ function closeDialog() {
         <br/>
         <button class="button" type="button" @click="closeDialog">OK</button>
     </dialog>
-    <div class="grid-container ">
-        <div class="grid-x grid-padding-x">
-            <div id="leafletmap" class="cell auto"></div>
+    
+    <!-- main layout - map + button -->
+    <div class="main-layout">
+        <div id="leafletmap"></div>
+        
+        <!-- button to show form - positioned over map -->
+        <button class="report-button" @click="toggleForm">
+            {{ form_visible ? 'Close Form' : 'Report New Incident' }}
+        </button>
+    </div>
+    
+    <!-- new incident form - slides in from right when visible -->
+    <div class="incident-form" :class="{ visible: form_visible }">
+        <div class="form-header">
+            <h3>Add New Incident</h3>
+            <button class="close-form" @click="toggleForm">×</button>
         </div>
+        
+        <label>Case Number</label>
+        <input v-model="newIncident.case_number" placeholder="24-123456" />
+        
+        <label>Date</label>
+        <input v-model="newIncident.date" type="date" />
+        
+        <label>Time</label>
+        <input v-model="newIncident.time" type="time" step="1" />
+        
+        <label>Crime Type</label>
+        <select v-model="newIncident.code">
+            <option value="">-- pick one --</option>
+            <option v-for="c in codes" :key="c.code" :value="c.code">
+                {{ c.type }}
+            </option>
+        </select>
+        
+        <label>Incident Description</label>
+        <input v-model="newIncident.incident" placeholder="what happened" />
+        
+        <label>Police Grid</label>
+        <input v-model="newIncident.police_grid" type="number" placeholder="87" />
+        
+        <label>Neighborhood</label>
+        <select v-model="newIncident.neighborhood_number">
+            <option value="">-- pick one --</option>
+            <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                {{ n.name }}
+            </option>
+        </select>
+        
+        <label>Block Address</label>
+        <input v-model="newIncident.block" placeholder="1XX MAIN ST" />
+        
+        <button class="button" @click="submitIncident">Submit</button>
+        
+        <p v-if="form_error" class="form-error">{{ form_error }}</p>
+        <p v-if="form_success" class="form-success">incident added!</p>
     </div>
 </template>
 
 <style scoped>
+/* dialog for api url */
 #rest-dialog {
     width: 20rem;
     margin-top: 1rem;
     z-index: 1000;
 }
-
-#leafletmap {
-    height: 500px;
-}
-
 .dialog-header {
     font-size: 1.2rem;
     font-weight: bold;
 }
-
 .dialog-label {
     font-size: 1rem;
 }
-
 .dialog-input {
     font-size: 1rem;
     width: 100%;
 }
-
 .dialog-error {
     font-size: 1rem;
     color: #D32323;
+}
+
+/* main layout - full screen with padding */
+.main-layout {
+    position: relative;
+    padding: 1rem;
+    height: calc(100vh - 2rem);
+}
+
+/* map fills the space */
+#leafletmap {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+}
+
+/* button to open form - floats over map in top right */
+.report-button {
+    position: absolute;
+    top: 1.5rem;
+    right: 1.5rem;
+    padding: 0.75rem 1.5rem;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    z-index: 500;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.report-button:hover {
+    background: #2563eb;
+}
+
+/* incident form - slides in from right */
+.incident-form {
+    position: fixed;
+    top: 1rem;
+    right: -450px; /* hidden off screen */
+    width: 400px;
+    height: calc(100vh - 4rem); /* leave room at bottom for leaflet watermark */
+    background: white;
+    padding: 2rem;
+    overflow-y: auto;
+    box-shadow: -2px 0 10px rgba(0,0,0,0.2);
+    transition: right 0.3s ease; /* smooth slide */
+    z-index: 600;
+    border-radius: 8px;
+}
+.incident-form.visible {
+    right: 1rem; /* slides in when visible */
+}
+
+/* form header with title and close button */
+.form-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+.form-header h3 {
+    margin: 0;
+    color: #333;
+}
+.close-form {
+    background: #f5f5f5 !important;
+    border: 1px solid #ddd !important;
+    font-size: 1.25rem;
+    color: #666 !important;
+    cursor: pointer;
+    padding: 0.25rem 0.75rem !important;
+    border-radius: 4px;
+    line-height: 1;
+    width: auto !important;
+    margin: 0 !important;
+}
+.close-form:hover {
+    background: #e5e5e5 !important;
+    color: #333 !important;
+}
+
+/* form fields */
+.incident-form label {
+    display: block;
+    margin-top: 1rem;
+    font-weight: bold;
+    color: #555;
+}
+.incident-form input, 
+.incident-form select {
+    width: 100%;
+    padding: 0.5rem;
+    margin-top: 0.25rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+/* submit button at bottom with proper spacing */
+.incident-form button {
+    width: 100%;
+    margin-top: 1.5rem;
+    padding: 0.75rem;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.incident-form button:hover {
+    background: #2563eb;
+}
+
+/* error and success messages */
+.form-error { 
+    color: #D32323; 
+    margin-top: 0.5rem;
+}
+.form-success { 
+    color: #2E7D32;
+    margin-top: 0.5rem;
 }
 </style>
