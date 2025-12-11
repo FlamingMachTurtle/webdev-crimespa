@@ -53,16 +53,16 @@ Eli          Caiden              Charlotte
 
 | ID | Task | Pts | When | Status |
 |----|------|-----|------|--------|
-| A1 | API connection dialog | 2 | Wed AM | To Do |
-| A2 | Fetch neighborhoods | 2 | Wed AM | To Do |
-| A3 | Fetch crime codes | 3 | Wed PM | To Do |
-| A4 | Fetch incidents | 3 | Wed PM | To Do |
-| F1 | New incident form UI | 1 | Wed PM | To Do |
-| F2 | Form required fields | 1 | Wed PM | To Do |
-| F3 | POST to API | 1 | Wed Eve | To Do |
+| A1 | API connection dialog | 2 | Wed AM | ✅ Done |
+| A2 | Fetch neighborhoods | 2 | Wed AM | ✅ Done |
+| A3 | Fetch crime codes | 3 | Wed PM | ✅ Done |
+| A4 | Fetch incidents | 3 | Wed PM | ✅ Done |
+| F1 | New incident form UI | 1 | Wed PM | ✅ Done |
+| F2 | Form required fields | 1 | Wed PM | ✅ Done |
+| F3 | POST to API | 1 | Wed Eve | ✅ Done |
 | D3 | Address lookup | 3 | Fri AM | To Do |
 
-**Wed goal:** Finish A1-A4, F1-F3 (13 pts)  
+**Wed goal:** Finish A1-A4, F1-F3 (13 pts) ✅ **COMPLETE**  
 **Fri goal:** D3 after Charlotte's table works (3 pts)
 
 ---
@@ -148,8 +148,8 @@ Eli          Caiden              Charlotte
 
 | Person | Done | Total |
 |--------|------|-------|
-| Eli | 0 | 16 |
+| Eli | 13 | 16 |
 | Caiden | 0 | 8 |
 | Charlotte | 0 | 14 |
 | Starter | 7 | 7 |
-| **Total** | **7** | **45** |
+| **Total** | **20** | **45** |

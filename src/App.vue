@@ -135,7 +135,7 @@ function submitIncident() {
     
     // send to api
     fetch(api + '/new-incident', {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             case_number: newIncident.case_number,
