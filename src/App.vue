@@ -1,5 +1,6 @@
 <script setup>
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, ref, onMounted, computed } from 'vue'
+
 
 let crime_url = ref('');
 let dialog_err = ref(false);
@@ -23,6 +24,14 @@ let newIncident = reactive({
 let form_error = ref('');
 let form_success = ref(false);
 let form_visible = ref(false); // controls if form is shown or hidden
+
+// filter state
+let filters = reactive({
+    start_date: '',
+    end_date: '',
+    selected_codes: [],      // array of selected crime type codes
+    selected_neighborhood: '' // single neighborhood id or empty for all
+});
 
 let map = reactive(
     {
@@ -186,6 +195,61 @@ function closeDialog() {
         dialog_err.value = true;
     }
 }
+
+// computed property - filters incidents based on current filter selections
+const filteredIncidents = computed(() => {
+    return incidents.value.filter(inc => {
+        // date filter
+        if (filters.start_date && inc.date < filters.start_date) return false;
+        if (filters.end_date && inc.date > filters.end_date) return false;
+        
+        // crime type filter (if any selected)
+        if (filters.selected_codes.length > 0) {
+            if (!filters.selected_codes.includes(inc.code)) return false;
+        }
+        
+        // neighborhood filter
+        if (filters.selected_neighborhood !== '') {
+            if (inc.neighborhood_number != filters.selected_neighborhood) return false;
+        }
+        
+        return true;
+    });
+});
+
+// categorize crime by type for color coding
+function getCrimeCategory(code) {
+    // violent crimes: homicide, rape, robbery, assault (typically codes < 500)
+    if (code < 500) return 'violent';
+    // property crimes: burglary, theft, auto theft, arson (typically 500-999)
+    if (code >= 500 && code < 1000) return 'property';
+    // other: everything else
+    return 'other';
+}
+// delete incident from database
+function deleteIncident(case_number) {
+    if (!confirm(`Delete case ${case_number}?`)) return;
+    
+    let api = crime_url.value.replace(/\/+$/, '');
+    
+    fetch(api + '/remove-incident', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ case_number: String(case_number) })
+    })
+    .then(res => {
+        if (!res.ok) {
+            throw new Error('Server returned ' + res.status);
+        }
+        // remove from local array immediately - server returned OK
+        incidents.value = incidents.value.filter(inc => inc.case_number !== case_number);
+        console.log('deleted case:', case_number);
+    })
+    .catch(err => {
+        console.log('delete error:', err);
+        alert('Failed to delete incident: ' + err.message);
+    });
+}
 </script>
 
 <template>
@@ -207,6 +271,79 @@ function closeDialog() {
             {{ form_visible ? 'Close Form' : 'Report New Incident' }}
         </button>
     </div>
+
+    <!-- filters and crime table section -->
+<div class="table-section">
+    <h2>Crime Incidents</h2>
+    
+    <!-- filter controls -->
+    <div class="filters">
+        <div class="filter-group">
+            <label>Start Date</label>
+            <input type="date" v-model="filters.start_date" />
+        </div>
+        <div class="filter-group">
+            <label>End Date</label>
+            <input type="date" v-model="filters.end_date" />
+        </div>
+        <div class="filter-group">
+            <label>Crime Type <button class="clear-btn" @click="filters.selected_codes = []">Clear</button></label>
+            <select v-model="filters.selected_codes" multiple>
+                <option v-for="c in codes" :key="c.code" :value="c.code">
+                    {{ c.type }}
+                </option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Neighborhood</label>
+            <select v-model="filters.selected_neighborhood">
+                <option value="">All Neighborhoods</option>
+                <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                    {{ n.name }}
+                </option>
+            </select>
+        </div>
+    </div>
+    
+    <!-- results count -->
+    <p class="results-count">Showing {{ filteredIncidents.length }} of {{ incidents.length }} incidents</p>
+    
+    <!-- color legend -->
+<div class="legend">
+    <span class="legend-item"><span class="dot violent"></span> Violent</span>
+    <span class="legend-item"><span class="dot property"></span> Property</span>
+    <span class="legend-item"><span class="dot other"></span> Other</span>
+</div>
+
+    <!-- crime table -->
+    <div class="table-wrapper">
+        <table class="crime-table">
+            <thead>
+                <tr>
+                    <th>Case #</th>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Incident</th>
+                    <th>Block</th>
+                    <th>Neighborhood</th>
+                    <th>Delete</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="inc in filteredIncidents" :key="inc.case_number" :class="getCrimeCategory(inc.code)">
+                    <td>{{ inc.case_number }}</td>
+                    <td>{{ inc.date }}</td>
+                    <td>{{ inc.time }}</td>
+                    <td>{{ inc.incident }}</td>
+                    <td>{{ inc.block }}</td>
+                    <td>{{ neighborhoods.find(n => n.id === inc.neighborhood_number)?.name || inc.neighborhood_number }}</td>
+                    <td><button class="delete-btn" @click="deleteIncident(inc.case_number)">🗑️</button></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
     
     <!-- new incident form - slides in from right when visible -->
     <div class="incident-form" :class="{ visible: form_visible }">
@@ -283,7 +420,7 @@ function closeDialog() {
 .main-layout {
     position: relative;
     padding: 1rem;
-    height: calc(100vh - 2rem);
+    height: 60vh;
 }
 
 /* map fills the space */
@@ -399,5 +536,140 @@ function closeDialog() {
 .form-success { 
     color: #2E7D32;
     margin-top: 0.5rem;
+}
+
+/* table section */
+.table-section {
+    padding: 1rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+.table-section h2 {
+    margin-bottom: 1rem;
+    color: #333;
+}
+
+/* filter controls */
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background: #f5f5f5;
+    border-radius: 8px;
+}
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    min-width: 150px;
+}
+.filter-group label {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: #555;
+}
+.filter-group input,
+.filter-group select {
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+.filter-group select[multiple] {
+    height: 100px;
+}
+
+.results-count {
+    color: #666;
+    margin-bottom: 0.5rem;
+}
+
+/* table wrapper for horizontal scroll on small screens */
+.table-wrapper {
+    overflow-x: auto;
+}
+
+/* crime table */
+.crime-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+.crime-table th,
+.crime-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+.crime-table th {
+    background: #3b82f6;
+    color: white;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+.crime-table tbody tr:hover {
+    background: #f0f7ff;
+}
+.clear-btn {
+    font-size: 0.75rem;
+    padding: 0.1rem 0.4rem;
+    margin-left: 0.5rem;
+    background: #e5e5e5;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.clear-btn:hover {
+    background: #ddd;
+}
+/* color coded rows */
+.crime-table tbody tr.violent {
+    background-color: #ffcdd2;
+}
+.crime-table tbody tr.property {
+    background-color: #fff9c4;
+}
+.crime-table tbody tr.other {
+    background-color: #e0e0e0;
+}
+
+/* keep hover effect */
+.crime-table tbody tr.violent:hover { background-color: #ef9a9a; }
+.crime-table tbody tr.property:hover { background-color: #fff176; }
+.crime-table tbody tr.other:hover { background-color: #bdbdbd; }
+
+/* legend */
+.legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: #555;
+}
+.dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+}
+.dot.violent { background: #ffcdd2; border: 1px solid #e57373; }
+.dot.property { background: #fff9c4; border: 1px solid #ffd54f; }
+.dot.other { background: #e0e0e0; border: 1px solid #bdbdbd; }
+/* delete button */
+.delete-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+}
+.delete-btn:hover {
+    background: #ffcdd2;
 }
 </style>
