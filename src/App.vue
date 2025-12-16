@@ -1785,30 +1785,51 @@ function barWidth(count, distribution) {
     return `${percent}%`;
 }
 
-// Hour distribution (8 buckets: 12am, 3am, 6am, 9am, 12pm, 3pm, 6pm, 9pm)
+// Hour distribution with crime type breakdown (8 buckets: 12am, 3am, 6am, 9am, 12pm, 3pm, 6pm, 9pm)
 const hourDistribution = computed(() => {
-    const buckets = [0, 0, 0, 0, 0, 0, 0, 0];
+    const buckets = Array(8).fill(null).map(() => ({ violent: 0, property: 0, other: 0, total: 0 }));
     filteredIncidents.value.forEach(inc => {
         const hour = parseInt(inc.time.split(':')[0]);
         const bucket = Math.floor(hour / 3);
-        buckets[bucket]++;
+        const category = getCrimeCategory(inc.code);
+        buckets[bucket][category]++;
+        buckets[bucket].total++;
     });
     return buckets;
 });
 
-// Day of week distribution
+// Simple hour totals for peak calculation
+const hourTotals = computed(() => hourDistribution.value.map(b => b.total));
+
+// Day of week distribution with crime type breakdown
 const dayDistribution = computed(() => {
-    const days = [0, 0, 0, 0, 0, 0, 0]; // Sun-Sat
+    const days = Array(7).fill(null).map(() => ({ violent: 0, property: 0, other: 0, total: 0 })); // Sun-Sat
     filteredIncidents.value.forEach(inc => {
         const dayIndex = new Date(inc.date).getDay();
-        days[dayIndex]++;
+        const category = getCrimeCategory(inc.code);
+        days[dayIndex][category]++;
+        days[dayIndex].total++;
     });
     return days;
 });
 
+// Simple day totals for peak calculation
+const dayTotals = computed(() => dayDistribution.value.map(d => d.total));
+
+// Calculate stacked bar widths as percentages
+function stackedBarWidths(bucket, maxTotal) {
+    if (!bucket || maxTotal === 0) return { violent: '0%', property: '0%', other: '0%' };
+    const scale = 100 / maxTotal;
+    return {
+        violent: `${bucket.violent * scale}%`,
+        property: `${bucket.property * scale}%`,
+        other: `${bucket.other * scale}%`
+    };
+}
+
 // Weekend vs weekday stats
 const weekendStats = computed(() => {
-    const d = dayDistribution.value;
+    const d = dayTotals.value;
     const weekend = d[0] + d[6];  // Sun + Sat
     const weekday = d[1] + d[2] + d[3] + d[4] + d[5];
     const total = weekend + weekday;
@@ -1822,8 +1843,8 @@ const weekendStats = computed(() => {
 
 // Peak hour and day
 const peakStats = computed(() => {
-    const hours = hourDistribution.value;
-    const days = dayDistribution.value;
+    const hours = hourTotals.value;
+    const days = dayTotals.value;
     const peakHourIndex = hours.indexOf(Math.max(...hours));
     const peakDayIndex = days.indexOf(Math.max(...days));
     return {
@@ -1833,6 +1854,10 @@ const peakStats = computed(() => {
         peakDayCount: days[peakDayIndex]
     };
 });
+
+// Max values for scaling stacked bars
+const maxHourTotal = computed(() => Math.max(...hourTotals.value, 1));
+const maxDayTotal = computed(() => Math.max(...dayTotals.value, 1));
 
 // Top neighborhoods in current view (for "All Areas" mode)
 const topNeighborhoods = computed(() => {
@@ -2011,25 +2036,40 @@ const topNeighborhoods = computed(() => {
                 <span v-else> currently visible</span>
             </p>
             
+            <!-- Compact crime type legend -->
+            <div class="crime-legend">
+                <span class="legend-item"><span class="legend-dot violent"></span>Violent</span>
+                <span class="legend-item"><span class="legend-dot property"></span>Property</span>
+                <span class="legend-item"><span class="legend-dot other"></span>Other</span>
+            </div>
+            
             <div class="charts-row">
                 <!-- Time of Day Chart -->
                 <div class="chart-container">
                     <h4 class="chart-title">Time of Day</h4>
                     <div class="bar-chart">
                         <div 
-                            v-for="(count, i) in hourDistribution" 
+                            v-for="(bucket, i) in hourDistribution" 
                             :key="'hour-'+i" 
                             class="bar-row"
+                            :title="`${hourLabels[i]}: ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
                         >
                             <span class="bar-label">{{ hourLabels[i] }}</span>
-                            <div class="bar-track">
+                            <div class="bar-track stacked">
                                 <div 
-                                    class="bar-fill hour-bar" 
-                                    :style="{ width: barWidth(count, hourDistribution) }"
-                                    :class="{ 'peak': count === Math.max(...hourDistribution) && count > 0 }"
+                                    class="bar-segment violent" 
+                                    :style="{ width: stackedBarWidths(bucket, maxHourTotal).violent }"
+                                ></div>
+                                <div 
+                                    class="bar-segment property" 
+                                    :style="{ width: stackedBarWidths(bucket, maxHourTotal).property }"
+                                ></div>
+                                <div 
+                                    class="bar-segment other" 
+                                    :style="{ width: stackedBarWidths(bucket, maxHourTotal).other }"
                                 ></div>
                             </div>
-                            <span class="bar-count">{{ count }}</span>
+                            <span class="bar-count">{{ bucket.total }}</span>
                         </div>
                     </div>
                     <p class="chart-insight">
@@ -2043,22 +2083,28 @@ const topNeighborhoods = computed(() => {
                     <h4 class="chart-title">Day of Week</h4>
                     <div class="bar-chart">
                         <div 
-                            v-for="(count, i) in dayDistribution" 
+                            v-for="(bucket, i) in dayDistribution" 
                             :key="'day-'+i" 
                             class="bar-row"
+                            :class="{ 'weekend-row': i === 0 || i === 6 }"
+                            :title="`${dayLabels[i]}: ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
                         >
                             <span class="bar-label">{{ dayLabels[i] }}</span>
-                            <div class="bar-track">
+                            <div class="bar-track stacked">
                                 <div 
-                                    class="bar-fill day-bar" 
-                                    :style="{ width: barWidth(count, dayDistribution) }"
-                                    :class="{ 
-                                        'peak': count === Math.max(...dayDistribution) && count > 0,
-                                        'weekend': i === 0 || i === 6
-                                    }"
+                                    class="bar-segment violent" 
+                                    :style="{ width: stackedBarWidths(bucket, maxDayTotal).violent }"
+                                ></div>
+                                <div 
+                                    class="bar-segment property" 
+                                    :style="{ width: stackedBarWidths(bucket, maxDayTotal).property }"
+                                ></div>
+                                <div 
+                                    class="bar-segment other" 
+                                    :style="{ width: stackedBarWidths(bucket, maxDayTotal).other }"
                                 ></div>
                             </div>
-                            <span class="bar-count">{{ count }}</span>
+                            <span class="bar-count">{{ bucket.total }}</span>
                         </div>
                     </div>
                     <p class="chart-insight">
@@ -4027,6 +4073,74 @@ const topNeighborhoods = computed(() => {
 .bar-fill.peak {
     background: linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%) !important;
     box-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
+}
+
+/* Stacked bar segments for crime type breakdown */
+.bar-track.stacked {
+    display: flex;
+    overflow: hidden;
+}
+
+.bar-segment {
+    height: 100%;
+    transition: width 0.3s ease;
+    min-width: 0;
+}
+
+.bar-segment.violent {
+    background: #ef4444;
+}
+
+.bar-segment.property {
+    background: #eab308;
+}
+
+.bar-segment.other {
+    background: #6b7280;
+}
+
+/* Weekend row indicator */
+.bar-row.weekend-row .bar-label {
+    color: #a78bfa;
+}
+
+/* Compact crime type legend */
+.crime-legend {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    padding: 0.4rem 0.75rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+}
+
+.crime-legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.7rem;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+}
+
+.legend-dot.violent {
+    background: #ef4444;
+}
+
+.legend-dot.property {
+    background: #eab308;
+}
+
+.legend-dot.other {
+    background: #6b7280;
 }
 
 .bar-count {
