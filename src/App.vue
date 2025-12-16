@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref, onMounted, computed } from 'vue'
+import { reactive, ref, onMounted, computed, watch } from 'vue'
 
 
 let crime_url = ref('');
@@ -278,10 +278,10 @@ function initializeCrimes() {
         });
 }
 
-// B3: Calculate crime counts for each neighborhood
+// B3: Calculate crime counts for each neighborhood based on FILTERED incidents
 function updateNeighborhoodCrimeCounts() {
     neighborhoodCrimeCounts.value = {};
-    incidents.value.forEach(inc => {
+    filteredIncidents.value.forEach(inc => {
         const nid = inc.neighborhood_number;
         if (!neighborhoodCrimeCounts.value[nid]) {
             neighborhoodCrimeCounts.value[nid] = 0;
@@ -1006,6 +1006,12 @@ const filteredIncidents = computed(() => {
     
     return filtered;
 });
+
+// Watch for filter changes and update neighborhood markers
+watch(filteredIncidents, () => {
+    updateNeighborhoodCrimeCounts();
+    addNeighborhoodMarkers();
+}, { deep: true });
 
 // Smart search: generate categorized suggestions based on search input
 const smartSearchSuggestions = computed(() => {
