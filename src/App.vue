@@ -30,8 +30,13 @@ let filters = reactive({
     start_date: '',
     end_date: '',
     selected_codes: [],      // array of selected crime type codes
-    selected_neighborhood: '' // single neighborhood id or empty for all
+    selected_neighborhood: '', // single neighborhood id or empty for all
+    limit_to_visible: true,   // only show crimes in visible map area (core requirement)
+    max_incidents: 1000       // max incidents to show
 });
+
+// track which neighborhoods are currently visible on map
+let visibleNeighborhoods = ref([]);
 
 // X2: Individual crime markers state
 let crimeMarkers = reactive({});  // object to store markers by case_number
@@ -57,6 +62,20 @@ let addressSearch = reactive({
 
 // B3: neighborhood crime counts
 let neighborhoodCrimeCounts = reactive({});
+
+// Block-level geocoding cache - stores geocoded addresses to avoid repeat API calls
+// Key: "600_MAIN_ST" -> Value: {lat, lng}
+let geocodeCache = reactive({});
+
+// Track which markers are currently being geocoded (loading state)
+// Using ref so Vue properly tracks changes when we add/remove keys
+let geocodingInProgress = ref({});
+
+// Track geocoding progress for each case (0-100)
+let geocodingProgress = ref({});
+
+// Status message shown during geocoding
+let geocodingStatus = ref('');
 
 let map = reactive(
     {
@@ -103,6 +122,17 @@ onMounted(() => {
         maxZoom: 18
     }).addTo(map.leaflet);
     map.leaflet.setMaxBounds([[44.883658, -93.217977], [45.008206, -92.993787]]);
+
+    // Update when map is panned/zoomed (core requirement)
+    map.leaflet.on('moveend', () => {
+        const center = map.leaflet.getCenter();
+        map.center.lat = center.lat;
+        map.center.lng = center.lng;
+        // Store current center address for display (but don't overwrite if user is typing)
+        map.center.address = `${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}`;
+        // Update visible neighborhoods based on map bounds
+        updateVisibleNeighborhoods();
+    });
 
     // Get boundaries for St. Paul neighborhoods
     let district_boundary = new L.geoJson();
@@ -154,6 +184,8 @@ function initializeCrimes() {
             updateNeighborhoodCrimeCounts();
             // B3: Add neighborhood markers
             addNeighborhoodMarkers();
+            // Initialize visible neighborhoods based on current map view
+            updateVisibleNeighborhoods();
         });
 }
 
@@ -162,10 +194,10 @@ function updateNeighborhoodCrimeCounts() {
     neighborhoodCrimeCounts.value = {};
     incidents.value.forEach(inc => {
         const nid = inc.neighborhood_number;
-        if (!neighborhoodCrimeCounts[nid]) {
-            neighborhoodCrimeCounts[nid] = 0;
+        if (!neighborhoodCrimeCounts.value[nid]) {
+            neighborhoodCrimeCounts.value[nid] = 0;
         }
-        neighborhoodCrimeCounts[nid]++;
+        neighborhoodCrimeCounts.value[nid]++;
     });
 }
 
@@ -182,7 +214,7 @@ function addNeighborhoodMarkers() {
     // Add new markers with crime counts
     map.neighborhood_markers.forEach((nm, idx) => {
         const nid = idx + 1; // neighborhood IDs are 1-indexed
-        const count = neighborhoodCrimeCounts[nid] || 0;
+        const count = neighborhoodCrimeCounts.value[nid] || 0;
         
         // Create a custom icon based on crime count
         const color = getColorByCount(count);
@@ -213,6 +245,25 @@ function getColorByCount(count) {
     if (count < 100) return '#FFA500'; // orange
     if (count < 150) return '#FF6347'; // tomato
     return '#DC143C'; // crimson
+}
+
+// Core requirement: determine which neighborhoods are visible on current map view
+function updateVisibleNeighborhoods() {
+    if (!map.leaflet) return;
+    
+    const bounds = map.leaflet.getBounds();
+    const visible = [];
+    
+    // Check each neighborhood marker location against map bounds
+    map.neighborhood_markers.forEach((nm, idx) => {
+        const nid = idx + 1; // neighborhood IDs are 1-indexed
+        const [lat, lng] = nm.location;
+        if (bounds.contains([lat, lng])) {
+            visible.push(nid);
+        }
+    });
+    
+    visibleNeighborhoods.value = visible;
 }
 
 // C1 + C2 + C3: Search for address and center map
@@ -358,6 +409,11 @@ function closeDialog() {
 const filteredIncidents = computed(() => {
     // First apply filters
     let filtered = incidents.value.filter(inc => {
+        // Core requirement: filter by visible map area
+        if (filters.limit_to_visible && visibleNeighborhoods.value.length > 0) {
+            if (!visibleNeighborhoods.value.includes(inc.neighborhood_number)) return false;
+        }
+        
         // date filter
         if (filters.start_date && inc.date < filters.start_date) return false;
         if (filters.end_date && inc.date > filters.end_date) return false;
@@ -390,6 +446,11 @@ const filteredIncidents = computed(() => {
         
         return true;
     });
+    
+    // Apply max incidents limit
+    if (filters.max_incidents && filters.max_incidents < filtered.length) {
+        filtered = filtered.slice(0, filters.max_incidents);
+    }
     
     // X3: Apply sorting
     filtered.sort((a, b) => {
@@ -484,8 +545,82 @@ function cleanAddress(address) {
     return address.replace(/^(\d+)X\s/, '$10 ');
 }
 
-// X2: Add or toggle marker for a single crime incident
-function toggleCrimeMarker(incident) {
+// Block-level geocoding: converts "6XX MAIN ST" to coordinates on the 600 block
+async function geocodeBlock(address, neighborhoodNumber) {
+    // Parse: "6XX MAIN ST" -> "600 MAIN ST" (replace X's with 0's in block number)
+    const cleanedAddr = address.replace(/^(\d+)X+\s/i, (match, prefix) => prefix + '00 ');
+    const cacheKey = cleanedAddr.replace(/\s+/g, '_').toUpperCase();
+    
+    // Return cached result if available (instant)
+    if (geocodeCache[cacheKey]) {
+        console.log('Geocode cache hit:', cacheKey);
+        return { ...geocodeCache[cacheKey], cached: true };
+    }
+    
+    try {
+        // Geocode with "St Paul, MN" suffix for accuracy
+        const query = `${cleanedAddr}, St Paul, MN`;
+        console.log('Geocoding:', query);
+        
+        // Create abort controller for timeout (3 seconds max)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
+            { signal: controller.signal }
+        );
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error('Geocoding service error');
+        }
+        
+        const results = await response.json();
+        
+        if (results && results.length > 0) {
+            const result = results[0];
+            const location = {
+                lat: parseFloat(result.lat),
+                lng: parseFloat(result.lon),
+                accuracy: 'block'
+            };
+            
+            // Cache the result
+            geocodeCache[cacheKey] = location;
+            console.log('Geocoded successfully:', cleanedAddr, location);
+            return { ...location, cached: false };
+        }
+        
+        // Geocoding returned no results - fall back to neighborhood
+        console.log('Geocoding returned no results for:', query);
+        return getFallbackLocation(neighborhoodNumber);
+        
+    } catch (error) {
+        // Handle timeout or other errors gracefully
+        if (error.name === 'AbortError') {
+            console.log('Geocoding timed out, using neighborhood fallback');
+        } else {
+            console.error('Geocoding failed:', error);
+        }
+        return getFallbackLocation(neighborhoodNumber);
+    }
+}
+
+// Fallback: return neighborhood center when geocoding fails
+function getFallbackLocation(neighborhoodNumber) {
+    const nIdx = neighborhoodNumber - 1;
+    if (nIdx >= 0 && nIdx < map.neighborhood_markers.length) {
+        const [lat, lng] = map.neighborhood_markers[nIdx].location;
+        return { lat, lng, accuracy: 'neighborhood' };
+    }
+    // Ultimate fallback: city center
+    return { lat: map.center.lat, lng: map.center.lng, accuracy: 'city' };
+}
+
+// X2: Add or toggle marker for a single crime incident (with block-level geocoding)
+async function toggleCrimeMarker(incident) {
     const caseNum = incident.case_number;
     
     // If marker exists, remove it
@@ -495,52 +630,116 @@ function toggleCrimeMarker(incident) {
         return;
     }
     
-    // Try to geocode the address and add marker
-    const cleanAddr = cleanAddress(incident.block);
-    const geocodeUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanAddr + ', St. Paul, Minnesota')}&format=json&limit=1`;
+    // Prevent double-clicks while geocoding
+    if (geocodingInProgress.value[caseNum]) {
+        return;
+    }
     
-    fetch(geocodeUrl)
-        .then(res => res.json())
-        .then(results => {
-            if (results && results.length > 0) {
-                const result = results[0];
-                const lat = parseFloat(result.lat);
-                const lng = parseFloat(result.lon);
-                
-                // Create custom marker (different color from neighborhood markers)
-                const crimeIcon = L.icon({
-                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
-                            <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#9333ea" stroke="white" stroke-width="1"/>
-                            <circle cx="12" cy="13" r="5" fill="white"/>
-                        </svg>
-                    `),
-                    iconSize: [24, 32],
-                    iconAnchor: [12, 32],
-                    popupAnchor: [0, -32]
-                });
-                
-                // Build popup content
-                const popupContent = `
-                    <div style="width: 220px;">
-                        <b>Crime Details</b><br/>
-                        <strong>Case:</strong> ${incident.case_number}<br/>
-                        <strong>Date:</strong> ${incident.date}<br/>
-                        <strong>Time:</strong> ${incident.time}<br/>
-                        <strong>Incident:</strong> ${incident.incident}<br/>
-                        <strong>Address:</strong> ${cleanAddr}<br/>
-                        <button style="margin-top: 0.5rem; padding: 0.4rem 0.8rem; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;" onclick="alert('Delete via table button')">Delete</button>
-                    </div>
-                `;
-                
-                const marker = L.marker([lat, lng], { icon: crimeIcon })
-                    .bindPopup(popupContent)
-                    .addTo(map.leaflet);
-                
-                crimeMarkers[caseNum] = marker;
-            }
-        })
-        .catch(err => console.log('Geocoding error:', err));
+    // Set loading state - use spread to trigger Vue reactivity
+    geocodingInProgress.value = { ...geocodingInProgress.value, [caseNum]: true };
+    
+    // Initialize progress at 0
+    geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: 0 };
+    
+    // Animate progress from 0 to 85% over ~2.5 seconds (simulated progress during API call)
+    const progressInterval = setInterval(() => {
+        const current = geocodingProgress.value[caseNum] || 0;
+        if (current < 85) {
+            // Ease-out: slow down as we approach 85%
+            const increment = Math.max(1, (85 - current) / 10);
+            geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: Math.min(85, current + increment) };
+        }
+    }, 100);
+    
+    // Show status message
+    const cleanAddr = cleanAddress(incident.block);
+    geocodingStatus.value = `📍 Locating "${cleanAddr}" on map...`;
+    
+    try {
+        // Geocode the block address for accurate placement
+        const location = await geocodeBlock(incident.block, incident.neighborhood_number);
+        
+        // Stop the simulated progress and jump to 100%
+        clearInterval(progressInterval);
+        geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: 100 };
+        
+        // Add small random offset (~50m for block-level, ~200m for neighborhood fallback)
+        // This prevents markers from stacking exactly on top of each other
+        const offsetScale = location.accuracy === 'block' ? 0.0008 : 0.003;
+        const lat = location.lat + (Math.random() - 0.5) * offsetScale;
+        const lng = location.lng + (Math.random() - 0.5) * offsetScale;
+        
+        // Update status based on result
+        if (location.accuracy === 'block') {
+            geocodingStatus.value = `✅ Found "${cleanAddr}" - placing marker...`;
+        } else {
+            geocodingStatus.value = `⚠️ Couldn't find exact location, using neighborhood center...`;
+        }
+        
+        // Create custom purple marker
+        const crimeIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
+                    <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#9333ea" stroke="white" stroke-width="1"/>
+                    <circle cx="12" cy="13" r="5" fill="white"/>
+                </svg>
+            `),
+            iconSize: [24, 32],
+            iconAnchor: [12, 32],
+            popupAnchor: [0, -32]
+        });
+        
+        // Build popup content with accuracy indicator
+        const accuracyText = location.accuracy === 'block' 
+            ? '📍 Block-level accuracy' 
+            : '⚠️ Approximate (neighborhood center)';
+        const accuracyColor = location.accuracy === 'block' ? '#2e7d32' : '#f57c00';
+        
+        const popupContent = `
+            <div style="width: 240px;">
+                <b>Crime Details</b><br/>
+                <em style="color:${accuracyColor}; font-size: 0.85em;">${accuracyText}</em><br/>
+                <strong>Case:</strong> ${incident.case_number}<br/>
+                <strong>Date:</strong> ${incident.date}<br/>
+                <strong>Time:</strong> ${incident.time}<br/>
+                <strong>Incident:</strong> ${incident.incident}<br/>
+                <strong>Address:</strong> ${cleanAddr}
+            </div>
+        `;
+        
+        const marker = L.marker([lat, lng], { icon: crimeIcon })
+            .bindPopup(popupContent)
+            .addTo(map.leaflet);
+        
+        crimeMarkers[caseNum] = marker;
+        
+        // Pan map to marker and open popup immediately
+        map.leaflet.setView([lat, lng], 15, { animate: true });
+        setTimeout(() => marker.openPopup(), 300);
+        
+        // Scroll page to show map
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        
+    } catch (error) {
+        console.error('Failed to place marker:', error);
+        geocodingStatus.value = '❌ Failed to place marker';
+        clearInterval(progressInterval);
+    } finally {
+        // Clear loading state - create new object without the key to trigger reactivity
+        const { [caseNum]: _, ...rest } = geocodingInProgress.value;
+        geocodingInProgress.value = rest;
+        
+        // Clear progress state after a brief delay (let user see 100%)
+        setTimeout(() => {
+            const { [caseNum]: __, ...progressRest } = geocodingProgress.value;
+            geocodingProgress.value = progressRest;
+        }, 300);
+        
+        // Clear status message after a short delay
+        setTimeout(() => {
+            geocodingStatus.value = '';
+        }, 2000);
+    }
 }
 
 // X3: Handle table column sorting
@@ -604,6 +803,7 @@ function getSortIndicator(field) {
                 </button>
             </div>
             <p v-if="addressSearch.error" class="search-error">{{ addressSearch.error }}</p>
+            <p class="current-center">Map center: {{ map.center.address || `${map.center.lat.toFixed(4)}, ${map.center.lng.toFixed(4)}` }}</p>
         </div>
         
         <!-- button to show form - positioned over map in top right -->
@@ -627,6 +827,16 @@ function getSortIndicator(field) {
             <input type="date" v-model="filters.end_date" />
         </div>
         <div class="filter-group">
+            <label>Max Incidents</label>
+            <select v-model="filters.max_incidents">
+                <option :value="50">50</option>
+                <option :value="100">100</option>
+                <option :value="250">250</option>
+                <option :value="500">500</option>
+                <option :value="1000">1,000</option>
+            </select>
+        </div>
+        <div class="filter-group">
             <label>Crime Type <button class="clear-btn" @click="filters.selected_codes = []">Clear</button></label>
             <select v-model="filters.selected_codes" multiple>
                 <option v-for="c in codes" :key="c.code" :value="c.code">
@@ -643,10 +853,21 @@ function getSortIndicator(field) {
                 </option>
             </select>
         </div>
+        <div class="filter-group filter-toggle">
+            <label>
+                <input type="checkbox" v-model="filters.limit_to_visible" />
+                Only show crimes in visible map area
+            </label>
+        </div>
     </div>
     
     <!-- results count -->
     <p class="results-count">Showing {{ filteredIncidents.length }} of {{ incidents.length }} incidents</p>
+    
+    <!-- Geocoding status message -->
+    <div v-if="geocodingStatus" class="geocoding-status">
+        {{ geocodingStatus }}
+    </div>
     
     <!-- X4: Table search input -->
     <div class="table-search-container">
@@ -707,17 +928,58 @@ function getSortIndicator(field) {
                     <td>{{ inc.incident }}</td>
                     <td>{{ inc.block }}</td>
                     <td>{{ neighborhoods.find(n => n.id === inc.neighborhood_number)?.name || inc.neighborhood_number }}</td>
-                    <td>
-                        <button 
-                            class="marker-btn" 
-                            :class="{ active: crimeMarkers[inc.case_number] }"
-                            @click="toggleCrimeMarker(inc)"
-                            title="Add/remove marker on map"
-                        >
-                            📍
-                        </button>
-                        <button class="delete-btn" @click="deleteIncident(inc.case_number)">🗑️</button>
-                    </td>
+<td>
+                                        <button 
+                                            class="marker-btn" 
+                                            :class="{ 
+                                                active: crimeMarkers[inc.case_number],
+                                                loading: geocodingInProgress[inc.case_number]
+                                            }"
+                                            @click="toggleCrimeMarker(inc)"
+                                            :disabled="geocodingInProgress[inc.case_number]"
+                                            :title="geocodingInProgress[inc.case_number] ? 'Locating...' : (crimeMarkers[inc.case_number] ? 'Remove from map' : 'Show on map')"
+                                        >
+                                            <!-- Circular progress ring during loading -->
+                                            <svg v-if="geocodingInProgress[inc.case_number]" 
+                                                 class="progress-ring" 
+                                                 width="28" height="28" viewBox="0 0 28 28">
+                                                <!-- Grey background ring -->
+                                                <circle 
+                                                    class="progress-ring-bg"
+                                                    cx="14" cy="14" r="11"
+                                                    fill="none"
+                                                    stroke="#d0d0d0"
+                                                    stroke-width="3"
+                                                />
+                                                <!-- Green progress ring -->
+                                                <circle 
+                                                    class="progress-ring-fill"
+                                                    cx="14" cy="14" r="11"
+                                                    fill="none"
+                                                    stroke="#4caf50"
+                                                    stroke-width="3"
+                                                    stroke-linecap="round"
+                                                    :stroke-dasharray="69.1"
+                                                    :stroke-dashoffset="69.1 - (69.1 * (geocodingProgress[inc.case_number] || 0) / 100)"
+                                                    transform="rotate(-90 14 14)"
+                                                />
+                                                <!-- Number in center (no % to keep it centered) -->
+                                                <text x="14" y="15" 
+                                                      class="progress-text"
+                                                      text-anchor="middle" 
+                                                      dominant-baseline="middle"
+                                                      font-size="9" 
+                                                      font-weight="bold"
+                                                      font-family="system-ui, -apple-system, sans-serif"
+                                                      :fill="(geocodingProgress[inc.case_number] || 0) >= 100 ? '#4caf50' : '#555'">
+                                                    {{ Math.round(geocodingProgress[inc.case_number] || 0) }}
+                                                </text>
+                                            </svg>
+                                            <!-- Normal state: pin or checkmark -->
+                                            <span v-else>{{ crimeMarkers[inc.case_number] ? '✓' : '📍' }}</span>
+                                        </button>
+                                        <button class="delete-btn" @click="deleteIncident(inc.case_number)">🗑️</button>
+                                    </td>
                 </tr>
             </tbody>
         </table>
@@ -883,6 +1145,13 @@ function getSortIndicator(field) {
     margin-bottom: 0;
 }
 
+.current-center {
+    color: #666;
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0;
+}
+
 /* button to open form - floats over map in top right */
 .report-button {
     position: absolute;
@@ -1031,10 +1300,52 @@ function getSortIndicator(field) {
 .filter-group select[multiple] {
     height: 100px;
 }
+.filter-toggle {
+    display: flex;
+    align-items: center;
+}
+.filter-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.filter-toggle input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+}
 
 .results-count {
     color: #666;
     margin-bottom: 0.5rem;
+}
+
+/* Geocoding status message - prominent notification */
+.geocoding-status {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 0.75rem 1.25rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 /* X4: Table search input */
@@ -1157,6 +1468,72 @@ function getSortIndicator(field) {
 .dot.violent { background: #ffcdd2; border: 1px solid #e57373; }
 .dot.property { background: #fff9c4; border: 1px solid #ffd54f; }
 .dot.other { background: #e0e0e0; border: 1px solid #bdbdbd; }
+
+/* marker button - show on map */
+.marker-btn {
+    background: #e3f2fd;
+    border: 2px solid #2196f3;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0.3rem;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+.marker-btn:hover:not(:disabled) {
+    background: #bbdefb;
+    transform: scale(1.1);
+}
+.marker-btn:disabled {
+    cursor: wait;
+    opacity: 0.8;
+}
+.marker-btn.active {
+    background: #4caf50;
+    border-color: #388e3c;
+    color: white;
+}
+.marker-btn.active:hover:not(:disabled) {
+    background: #43a047;
+}
+.marker-btn.loading {
+    background: #f1f8e9;
+    border-color: #81c784;
+}
+
+/* Circular progress ring */
+.progress-ring {
+    display: block;
+    flex-shrink: 0;
+}
+
+.progress-ring-bg {
+    opacity: 1;
+}
+
+.progress-ring-fill {
+    transition: stroke-dashoffset 0.1s ease-out;
+}
+
+.progress-text {
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Subtle pulse on the loading button */
+.marker-btn.loading {
+    animation: softPulse 2s ease-in-out infinite;
+}
+
+@keyframes softPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.2); }
+}
+
 /* delete button */
 .delete-btn {
     background: none;
