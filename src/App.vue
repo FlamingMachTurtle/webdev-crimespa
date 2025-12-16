@@ -610,6 +610,7 @@ function getSortIndicator(field) {
         <button class="report-button" @click="toggleForm">
             {{ form_visible ? 'Close Form' : 'Report New Incident' }}
         </button>
+        <a href="about.html" class="about-link">About</a>
     </div>
 
     <!-- filters and crime table section -->
@@ -774,6 +775,25 @@ function getSortIndicator(field) {
 </template>
 
 <style scoped>
+.about-link {
+    position: absolute;
+    top: 1.5rem;
+    right: 16rem;
+    padding: 0.75rem 1.5rem;
+    background: #1e3a5f;
+    color: white;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 1rem;
+    line-height: 1.2;
+    display: inline-block;
+    z-index: 500;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.about-link:hover {
+    background: #2d5a87;
+}
 /* dialog for api url */
 #rest-dialog {
     width: 20rem;
@@ -894,6 +914,8 @@ function getSortIndicator(field) {
     border: none;
     border-radius: 6px;
     font-weight: 600;
+    font-size: 1rem;
+    line-height: 1.2;
     cursor: pointer;
     z-index: 500;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
