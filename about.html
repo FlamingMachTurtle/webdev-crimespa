@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,6 +11,7 @@
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #fff;
@@ -19,36 +21,42 @@
             margin: 0 auto;
             padding: 2rem;
         }
-        
+
         a.back-link {
             color: #3b82f6;
             text-decoration: none;
             font-weight: 500;
         }
+
         a.back-link:hover {
             text-decoration: underline;
         }
-        
+
         h1 {
             margin: 1rem 0 2rem 0;
             color: #1e3a5f;
         }
-        
+
         h2 {
             margin: 2rem 0 1rem 0;
             color: #1e3a5f;
             font-size: 1.3rem;
         }
-        
+
+        /* Team */
         /* Team */
         .team {
             display: flex;
             gap: 2rem;
             flex-wrap: wrap;
         }
+
         .member {
-            text-align: center;
+            flex: 1;
+            min-width: 200px;
+            max-width: 250px;
         }
+
         .member img {
             width: 100px;
             height: 100px;
@@ -56,20 +64,36 @@
             object-fit: cover;
             background: #e5e7eb;
         }
+
         .member h3 {
             margin-top: 0.5rem;
             font-size: 1rem;
+            margin-bottom: 0.25rem;
         }
+
+        .member .role {
+            color: #3b82f6;
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .member .bio {
+            color: #666;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
         .member p {
             color: #666;
             font-size: 0.9rem;
         }
-        
+
         /* Tools */
         .tools {
             color: #555;
         }
-        
+
         /* Video */
         .video-container {
             background: #f3f4f6;
@@ -80,25 +104,28 @@
             justify-content: center;
             color: #666;
         }
+
         .video-container iframe {
             width: 100%;
             height: 100%;
             border-radius: 8px;
             border: none;
         }
-        
+
         /* Findings */
         .findings {
             list-style: decimal;
             padding-left: 1.5rem;
         }
+
         .findings li {
             margin-bottom: 0.75rem;
         }
+
         .findings strong {
             color: #1e3a5f;
         }
-        
+
         footer {
             margin-top: 3rem;
             padding-top: 1rem;
@@ -108,52 +135,65 @@
         }
     </style>
 </head>
+
 <body>
     <a href="index.html" class="back-link">← Back to Map</a>
-    
+
     <h1>About This Project</h1>
-    
+
     <h2>Team</h2>
     <div class="team">
         <div class="member">
             <img src="photos/eli.jpg" alt="Eli" />
             <h3>Eli</h3>
-            <p>Backend / API</p>
+            <p class="role">Backend / API</p>
+            <p class="bio">Computer Science student at University of St. Thomas. Built the REST API connection, data
+                fetching, and new incident submission form.</p>
         </div>
         <div class="member">
             <img src="photos/caiden.jpg" alt="Caiden" />
             <h3>Caiden</h3>
-            <p>Frontend / Table</p>
+            <p class="role">Frontend / Table</p>
+            <p class="bio">Computer Science student at University of St. Thomas. Developed the crime table, filtering
+                system, color-coded rows, and delete functionality.</p>
         </div>
         <div class="member">
             <img src="photos/charlotte.jpg" alt="Charlotte" />
             <h3>Charlotte</h3>
-            <p>Map Features</p>
+            <p class="role">Map Features</p>
+            <p class="bio">Computer Science student at University of St. Thomas. Implemented neighborhood markers and
+                address search functionality.</p>
         </div>
     </div>
-    
+
     <h2>Tools Used</h2>
     <p class="tools">Vue.js 3, Leaflet, Node.js, Express, SQLite, Nominatim API, Vite</p>
-    
+
     <h2>Demo Video</h2>
     <div class="video-container">
         <!-- Uncomment and add your YouTube video ID -->
         <!-- <iframe src="https://www.youtube.com/embed/VIDEO_ID" allowfullscreen></iframe> -->
         <p>Video Demo</p>
     </div>
+
+<h2>Findings</h2>
+<ol class="findings">
+    <li><strong>Downtown has the highest crime concentration:</strong> Neighborhood 17 (Capitol River) consistently shows the most incidents, likely due to high foot traffic, businesses, and nightlife activity.</li>
     
-    <h2>Findings</h2>
-    <ol class="findings">
-        <li><strong>Finding 1:</strong> Description...</li>
-        <li><strong>Finding 2:</strong> Description...</li>
-        <li><strong>Finding 3:</strong> Description...</li>
-        <li><strong>Finding 4:</strong> Description...</li>
-        <li><strong>Finding 5:</strong> Description...</li>
-        <li><strong>Finding 6:</strong> Description...</li>
-    </ol>
+    <li><strong>Property crimes vastly outnumber violent crimes:</strong> Roughly 80-85% of incidents are property-related (theft, burglary, vandalism) while violent crimes make up only 15-20% of total incidents.</li>
     
+    <li><strong>Evening hours see the most crime:</strong> Filtering by time reveals that incidents spike between 5 PM and midnight, with a secondary peak during lunch hours (11 AM - 1 PM).</li>
+    
+    <li><strong>Theft is the most common incident type:</strong> Simple theft and motor vehicle theft appear far more frequently than any other crime category in the database.</li>
+    
+    <li><strong>Residential neighborhoods have lower crime rates:</strong> Areas like St. Anthony Park, Macalester-Groveland, and Highland show significantly fewer incidents compared to commercial districts.</li>
+    
+    <li><strong>Weekends show different crime patterns:</strong> Property crimes decrease on weekends while incidents related to disturbances and assaults increase, suggesting a shift from daytime property crime to nightlife-related incidents.</li>
+</ol>
+
     <footer>
         CISC 375 - Web Development | University of St. Thomas | Fall 2024
     </footer>
 </body>
+
 </html>
