@@ -109,6 +109,14 @@ let geocodingProgress = ref({});
 // Status message shown during geocoding
 let geocodingStatus = ref('');
 
+// Analytics panel state
+let analyticsCollapsed = ref(false);
+let districtLayers = ref({});  // map of neighborhood_id -> Leaflet layer
+
+// Labels for charts
+const hourLabels = ['12am', '3am', '6am', '9am', '12pm', '3pm', '6pm', '9pm'];
+const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 let map = reactive(
     {
         leaflet: null,
@@ -180,20 +188,51 @@ onMounted(() => {
         updateSearchFromMapPosition();
     });
 
-    // Get boundaries for St. Paul neighborhoods
-    let district_boundary = new L.geoJson();
-    district_boundary.addTo(map.leaflet);
+    // Get boundaries for St. Paul neighborhoods with click handlers
     fetch('data/StPaulDistrictCouncil.geojson')
     .then((response) => {
         return response.json();
     })
     .then((result) => {
-        result.features.forEach((value) => {
-            district_boundary.addData(value);
+        result.features.forEach((feature) => {
+            // Get district number from properties (district council number matches neighborhood)
+            const districtNum = parseInt(feature.properties.district);
+            
+            // Create layer with styling and click handler
+            const layer = L.geoJSON(feature, {
+                style: getPolygonStyle(districtNum),
+                onEachFeature: (f, l) => {
+                    // Click handler for polygon selection
+                    l.on('click', (e) => {
+                        L.DomEvent.stopPropagation(e);
+                        selectNeighborhood(districtNum);
+                    });
+                    // Hover effects
+                    l.on('mouseover', () => {
+                        if (filters.selected_neighborhood != districtNum) {
+                            l.setStyle({ fillOpacity: 0.4 });
+                        }
+                    });
+                    l.on('mouseout', () => {
+                        l.setStyle(getPolygonStyle(districtNum));
+                    });
+                }
+            });
+            
+            // Store reference and add to map
+            districtLayers.value[districtNum] = layer;
+            layer.addTo(map.leaflet);
         });
     })
     .catch((error) => {
-        console.log('Error:', error);
+        console.log('Error loading district boundaries:', error);
+    });
+    
+    // Click anywhere on map background to deselect
+    map.leaflet.on('click', () => {
+        if (filters.selected_neighborhood !== '') {
+            clearNeighborhoodSelection();
+        }
     });
 });
 
@@ -1700,6 +1739,117 @@ function getMapCategoryLabel(type) {
     }
 }
 
+// Polygon styling function - blue default, yellow when selected
+function getPolygonStyle(districtId) {
+    const isSelected = filters.selected_neighborhood == districtId;
+    return {
+        fillColor: isSelected ? '#fbbf24' : '#3b82f6',  // yellow or blue
+        fillOpacity: isSelected ? 0.5 : 0.2,
+        color: isSelected ? '#f59e0b' : '#2563eb',      // border
+        weight: isSelected ? 3 : 1
+    };
+}
+
+// Select a neighborhood (from polygon click or hotspot chip)
+function selectNeighborhood(neighborhoodId) {
+    // If clicking same one, deselect
+    if (filters.selected_neighborhood == neighborhoodId) {
+        clearNeighborhoodSelection();
+        return;
+    }
+    
+    // Set the filter (syncs with Area dropdown)
+    filters.selected_neighborhood = neighborhoodId;
+    
+    // Update polygon styles
+    updatePolygonStyles();
+}
+
+// Clear neighborhood selection
+function clearNeighborhoodSelection() {
+    filters.selected_neighborhood = '';
+    updatePolygonStyles();
+}
+
+// Update all polygon styles based on current selection
+function updatePolygonStyles() {
+    Object.entries(districtLayers.value).forEach(([id, layer]) => {
+        layer.setStyle(getPolygonStyle(parseInt(id)));
+    });
+}
+
+// Calculate bar width as percentage for charts
+function barWidth(count, distribution) {
+    const max = Math.max(...distribution, 1);
+    const percent = (count / max) * 100;
+    return `${percent}%`;
+}
+
+// Hour distribution (8 buckets: 12am, 3am, 6am, 9am, 12pm, 3pm, 6pm, 9pm)
+const hourDistribution = computed(() => {
+    const buckets = [0, 0, 0, 0, 0, 0, 0, 0];
+    filteredIncidents.value.forEach(inc => {
+        const hour = parseInt(inc.time.split(':')[0]);
+        const bucket = Math.floor(hour / 3);
+        buckets[bucket]++;
+    });
+    return buckets;
+});
+
+// Day of week distribution
+const dayDistribution = computed(() => {
+    const days = [0, 0, 0, 0, 0, 0, 0]; // Sun-Sat
+    filteredIncidents.value.forEach(inc => {
+        const dayIndex = new Date(inc.date).getDay();
+        days[dayIndex]++;
+    });
+    return days;
+});
+
+// Weekend vs weekday stats
+const weekendStats = computed(() => {
+    const d = dayDistribution.value;
+    const weekend = d[0] + d[6];  // Sun + Sat
+    const weekday = d[1] + d[2] + d[3] + d[4] + d[5];
+    const total = weekend + weekday;
+    return {
+        weekend,
+        weekday,
+        total,
+        weekendPercent: total ? Math.round(weekend / total * 100) : 0
+    };
+});
+
+// Peak hour and day
+const peakStats = computed(() => {
+    const hours = hourDistribution.value;
+    const days = dayDistribution.value;
+    const peakHourIndex = hours.indexOf(Math.max(...hours));
+    const peakDayIndex = days.indexOf(Math.max(...days));
+    return {
+        peakHour: hourLabels[peakHourIndex],
+        peakDay: dayLabels[peakDayIndex],
+        peakHourCount: hours[peakHourIndex],
+        peakDayCount: days[peakDayIndex]
+    };
+});
+
+// Top neighborhoods in current view (for "All Areas" mode)
+const topNeighborhoods = computed(() => {
+    const counts = {};
+    filteredIncidents.value.forEach(inc => {
+        counts[inc.neighborhood_number] = (counts[inc.neighborhood_number] || 0) + 1;
+    });
+    return Object.entries(counts)
+        .map(([id, count]) => ({
+            id: Number(id),
+            name: neighborhoods.value.find(n => n.id == id)?.name || 'Unknown',
+            count
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+});
+
 </script>
 
 <template>
@@ -1827,6 +1977,122 @@ function getMapCategoryLabel(type) {
             {{ form_visible ? 'Close Form' : 'Report New Incident' }}
         </button>
         <a href="about.html" class="about-link">About</a>
+    </div>
+
+    <!-- Analytics Panel -->
+    <div class="analytics-section">
+        <div class="analytics-panel" v-if="!analyticsCollapsed && incidents.length > 0">
+            <div class="analytics-header">
+                <h3 class="analytics-title">
+                    Crime Analytics: 
+                    <span class="analytics-area-name">
+                        {{ filters.selected_neighborhood 
+                            ? neighborhoods.find(n => n.id == filters.selected_neighborhood)?.name 
+                            : 'All Visible Areas' }}
+                    </span>
+                </h3>
+                <div class="analytics-actions">
+                    <button 
+                        v-if="filters.selected_neighborhood" 
+                        class="show-all-btn"
+                        @click="clearNeighborhoodSelection"
+                    >
+                        ↺ Show All
+                    </button>
+                    <button class="collapse-btn" @click="analyticsCollapsed = true">
+                        Collapse ▼
+                    </button>
+                </div>
+            </div>
+            
+            <p class="analytics-summary">
+                <strong>{{ filteredIncidents.length }}</strong> incidents
+                <span v-if="filters.selected_neighborhood"> in selected area</span>
+                <span v-else> currently visible</span>
+            </p>
+            
+            <div class="charts-row">
+                <!-- Time of Day Chart -->
+                <div class="chart-container">
+                    <h4 class="chart-title">Time of Day</h4>
+                    <div class="bar-chart">
+                        <div 
+                            v-for="(count, i) in hourDistribution" 
+                            :key="'hour-'+i" 
+                            class="bar-row"
+                        >
+                            <span class="bar-label">{{ hourLabels[i] }}</span>
+                            <div class="bar-track">
+                                <div 
+                                    class="bar-fill hour-bar" 
+                                    :style="{ width: barWidth(count, hourDistribution) }"
+                                    :class="{ 'peak': count === Math.max(...hourDistribution) && count > 0 }"
+                                ></div>
+                            </div>
+                            <span class="bar-count">{{ count }}</span>
+                        </div>
+                    </div>
+                    <p class="chart-insight">
+                        <span class="insight-icon">⏰</span> Peak: <strong>{{ peakStats.peakHour }}</strong>
+                        <span class="insight-count">({{ peakStats.peakHourCount }})</span>
+                    </p>
+                </div>
+                
+                <!-- Day of Week Chart -->
+                <div class="chart-container">
+                    <h4 class="chart-title">Day of Week</h4>
+                    <div class="bar-chart">
+                        <div 
+                            v-for="(count, i) in dayDistribution" 
+                            :key="'day-'+i" 
+                            class="bar-row"
+                        >
+                            <span class="bar-label">{{ dayLabels[i] }}</span>
+                            <div class="bar-track">
+                                <div 
+                                    class="bar-fill day-bar" 
+                                    :style="{ width: barWidth(count, dayDistribution) }"
+                                    :class="{ 
+                                        'peak': count === Math.max(...dayDistribution) && count > 0,
+                                        'weekend': i === 0 || i === 6
+                                    }"
+                                ></div>
+                            </div>
+                            <span class="bar-count">{{ count }}</span>
+                        </div>
+                    </div>
+                    <p class="chart-insight">
+                        <span class="insight-icon">📅</span> Weekends: <strong>{{ weekendStats.weekend }}</strong>
+                        <span class="insight-percent">({{ weekendStats.weekendPercent }}%)</span>
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Top Neighborhoods (only when no specific area selected) -->
+            <div v-if="!filters.selected_neighborhood && topNeighborhoods.length > 0" class="top-areas">
+                <h4 class="chart-title">Top Areas in View</h4>
+                <div class="hotspot-list">
+                    <button 
+                        v-for="n in topNeighborhoods" 
+                        :key="n.id"
+                        class="hotspot-chip"
+                        @click="selectNeighborhood(n.id)"
+                    >
+                        <span class="hotspot-name">{{ n.name }}</span>
+                        <span class="hotspot-count">{{ n.count }}</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Collapsed state -->
+        <button 
+            v-else-if="analyticsCollapsed && incidents.length > 0" 
+            class="analytics-expand" 
+            @click="analyticsCollapsed = false"
+        >
+            📊 Show Analytics ▲
+        </button>
     </div>
 
     <!-- Crime table section -->
@@ -3601,5 +3867,281 @@ function getMapCategoryLabel(type) {
 .table-search-container:has(.smart-search-dropdown) .table-search-input {
     border-radius: 8px 8px 0 0;
     border-color: #3b82f6;
+}
+
+/* ========== ANALYTICS PANEL STYLES ========== */
+.analytics-section {
+    padding: 0 1rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.analytics-panel {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    color: white;
+}
+
+.analytics-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.analytics-title {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.analytics-area-name {
+    color: #fbbf24;
+    font-weight: 700;
+}
+
+.analytics-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.show-all-btn {
+    padding: 0.4rem 0.75rem;
+    background: #fbbf24;
+    color: #1e293b;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.show-all-btn:hover {
+    background: #f59e0b;
+    transform: translateY(-1px);
+}
+
+.collapse-btn {
+    padding: 0.4rem 0.75rem;
+    background: rgba(255, 255, 255, 0.1);
+    color: #94a3b8;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.collapse-btn:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #e2e8f0;
+}
+
+.analytics-summary {
+    margin: 0 0 1rem 0;
+    font-size: 0.95rem;
+    color: #94a3b8;
+}
+
+.analytics-summary strong {
+    color: #22d3ee;
+    font-size: 1.1rem;
+}
+
+.charts-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.chart-container {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 1rem;
+}
+
+.chart-title {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.bar-chart {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.bar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bar-label {
+    width: 40px;
+    font-size: 0.75rem;
+    color: #94a3b8;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.bar-track {
+    flex: 1;
+    height: 18px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    min-width: 2px;
+}
+
+.bar-fill.hour-bar {
+    background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
+}
+
+.bar-fill.day-bar {
+    background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+}
+
+.bar-fill.day-bar.weekend {
+    background: linear-gradient(90deg, #8b5cf6 0%, #a78bfa 100%);
+}
+
+.bar-fill.peak {
+    background: linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%) !important;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
+}
+
+.bar-count {
+    width: 35px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.chart-insight {
+    margin: 0.75rem 0 0 0;
+    font-size: 0.85rem;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.insight-icon {
+    font-size: 1rem;
+}
+
+.chart-insight strong {
+    color: #fbbf24;
+}
+
+.insight-count,
+.insight-percent {
+    color: #64748b;
+    font-size: 0.8rem;
+}
+
+.top-areas {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 1rem;
+}
+
+.hotspot-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.hotspot-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(59, 130, 246, 0.2);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.hotspot-chip:hover {
+    background: rgba(59, 130, 246, 0.3);
+    border-color: rgba(59, 130, 246, 0.5);
+    transform: translateY(-2px);
+}
+
+.hotspot-name {
+    font-size: 0.85rem;
+    color: #e2e8f0;
+    font-weight: 500;
+}
+
+.hotspot-count {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.15);
+    padding: 0.15rem 0.4rem;
+    border-radius: 10px;
+}
+
+.analytics-expand {
+    width: 100%;
+    padding: 0.75rem;
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    color: #94a3b8;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-bottom: 1rem;
+}
+
+.analytics-expand:hover {
+    background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
+    color: #e2e8f0;
+}
+
+/* Responsive adjustments for analytics */
+@media (max-width: 640px) {
+    .charts-row {
+        grid-template-columns: 1fr;
+    }
+    
+    .analytics-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .analytics-actions {
+        width: 100%;
+    }
+    
+    .analytics-actions button {
+        flex: 1;
+    }
 }
 </style>
