@@ -2542,6 +2542,13 @@ const topNeighborhoods = computed(() => {
 </template>
 
 <style scoped>
+/* ========== DARK PAGE BACKGROUND ========== */
+:global(body) {
+    background: #1e293b;
+    margin: 0;
+    padding: 0;
+}
+
 .about-link {
     position: absolute;
     top: 1.5rem;
@@ -2699,6 +2706,7 @@ const topNeighborhoods = computed(() => {
     position: relative;
     padding: 1rem 1rem 0;
     height: 55vh;
+    background: #1e293b;
 }
 
 /* map fills the space */
@@ -3197,15 +3205,16 @@ const topNeighborhoods = computed(() => {
     padding: 0 1rem 1rem;
     max-width: 1400px;
     margin: -1px auto 0;
+    background: #1e293b;
 }
 
 /* ========== REDESIGNED FILTER BAR ========== */
 .filter-bar {
-    background: linear-gradient(to bottom, #ffffff 0%, #f9fafb 100%);
-    border: 1px solid #e5e7eb;
+    background: linear-gradient(to bottom, #334155 0%, #293548 100%);
+    border: 1px solid #475569;
     border-radius: 12px 12px 0 0;
     padding: 1.25rem 1.5rem;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* Top header with results and clear button */
@@ -3249,10 +3258,10 @@ const topNeighborhoods = computed(() => {
     align-items: center;
     gap: 0.4rem;
     padding: 0.5rem 1rem;
-    background: white;
+    background: rgba(239, 68, 68, 0.15);
     border: 2px solid #ef4444;
     border-radius: 8px;
-    color: #ef4444;
+    color: #fca5a5;
     font-size: 0.85rem;
     font-weight: 600;
     cursor: pointer;
@@ -3290,7 +3299,7 @@ const topNeighborhoods = computed(() => {
 .filter-label {
     font-size: 0.75rem;
     font-weight: 700;
-    color: #6b7280;
+    color: #94a3b8;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -3300,10 +3309,10 @@ const topNeighborhoods = computed(() => {
     width: 100%;
     padding: 0.65rem 0.85rem;
     padding-right: 2rem;
-    background: white;
-    border: 2px solid #e5e7eb;
+    background: #1e293b;
+    border: 2px solid #475569;
     border-radius: 8px;
-    color: #374151;
+    color: #e2e8f0;
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
@@ -3335,8 +3344,8 @@ const topNeighborhoods = computed(() => {
 }
 
 .filter-select option {
-    background: white;
-    color: #374151;
+    background: #1e293b;
+    color: #e2e8f0;
     padding: 0.5rem;
 }
 
@@ -3496,10 +3505,10 @@ const topNeighborhoods = computed(() => {
 
 .panel-btn {
     padding: 0.35rem 0.7rem;
-    background: white;
-    border: 1px solid #d1d5db;
+    background: #1e293b;
+    border: 1px solid #475569;
     border-radius: 6px;
-    color: #6b7280;
+    color: #94a3b8;
     font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
@@ -3547,10 +3556,10 @@ const topNeighborhoods = computed(() => {
 
 .date-input {
     padding: 0.5rem 0.75rem;
-    background: white;
-    border: 2px solid #e5e7eb;
+    background: #1e293b;
+    border: 2px solid #475569;
     border-radius: 6px;
-    color: #374151;
+    color: #e2e8f0;
     font-size: 0.875rem;
     font-weight: 500;
     transition: all 0.2s ease;
@@ -3731,14 +3740,18 @@ const topNeighborhoods = computed(() => {
 .crime-table td {
     padding: 0.75rem;
     text-align: left;
-    border-bottom: 1px solid #ddd;
+    border-bottom: 1px solid #334155;
 }
 .crime-table th {
-    background: #3b82f6;
+    background: #1e40af;
     color: white;
     font-weight: 600;
     position: sticky;
     top: 0;
+}
+
+.crime-table td {
+    color: #e2e8f0;
 }
 
 /* X3: Sortable column headers */
@@ -3748,11 +3761,11 @@ const topNeighborhoods = computed(() => {
 }
 
 .crime-table th.sortable:hover {
-    background: #2563eb;
+    background: #1d4ed8;
 }
 
 .crime-table tbody tr:hover {
-    background: #f0f7ff;
+    background: rgba(59, 130, 246, 0.15);
 }
 .clear-btn {
     font-size: 0.75rem;
@@ -3766,21 +3779,21 @@ const topNeighborhoods = computed(() => {
 .clear-btn:hover {
     background: #ddd;
 }
-/* color coded rows */
+/* color coded rows - dark theme */
 .crime-table tbody tr.violent {
-    background-color: #ffcdd2;
+    background-color: rgba(239, 68, 68, 0.15);
 }
 .crime-table tbody tr.property {
-    background-color: #fff9c4;
+    background-color: rgba(234, 179, 8, 0.12);
 }
 .crime-table tbody tr.other {
-    background-color: #e0e0e0;
+    background-color: rgba(100, 116, 139, 0.15);
 }
 
 /* keep hover effect */
-.crime-table tbody tr.violent:hover { background-color: #ef9a9a; }
-.crime-table tbody tr.property:hover { background-color: #fff176; }
-.crime-table tbody tr.other:hover { background-color: #bdbdbd; }
+.crime-table tbody tr.violent:hover { background-color: rgba(239, 68, 68, 0.25); }
+.crime-table tbody tr.property:hover { background-color: rgba(234, 179, 8, 0.25); }
+.crime-table tbody tr.other:hover { background-color: rgba(100, 116, 139, 0.3); }
 
 /* legend */
 .legend {
@@ -3793,7 +3806,7 @@ const topNeighborhoods = computed(() => {
     align-items: center;
     gap: 0.4rem;
     font-size: 0.85rem;
-    color: #555;
+    color: #94a3b8;
 }
 .dot {
     width: 14px;
@@ -3982,16 +3995,17 @@ const topNeighborhoods = computed(() => {
     padding: 0 1rem;
     max-width: 1400px;
     margin: 0 auto;
+    background: #1e293b;
 }
 
 .analytics-panel {
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-    border: 1px solid #e2e8f0;
+    background: linear-gradient(135deg, #334155 0%, #293548 100%);
+    border: 1px solid #475569;
     border-radius: 12px;
     padding: 1.25rem;
     margin-bottom: 1rem;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-    color: #334155;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: #e2e8f0;
 }
 
 .analytics-header {
@@ -4007,11 +4021,11 @@ const topNeighborhoods = computed(() => {
     margin: 0;
     font-size: 1.1rem;
     font-weight: 600;
-    color: #1e293b;
+    color: #e2e8f0;
 }
 
 .analytics-area-name {
-    color: #2563eb;
+    color: #60a5fa;
     font-weight: 700;
 }
 
@@ -4039,9 +4053,9 @@ const topNeighborhoods = computed(() => {
 
 .collapse-btn {
     padding: 0.4rem 0.75rem;
-    background: #e2e8f0;
-    color: #64748b;
-    border: 1px solid #cbd5e1;
+    background: rgba(255, 255, 255, 0.1);
+    color: #94a3b8;
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 6px;
     font-size: 0.8rem;
     cursor: pointer;
@@ -4049,18 +4063,18 @@ const topNeighborhoods = computed(() => {
 }
 
 .collapse-btn:hover {
-    background: #cbd5e1;
-    color: #334155;
+    background: rgba(255, 255, 255, 0.15);
+    color: #e2e8f0;
 }
 
 .analytics-summary {
     margin: 0 0 1rem 0;
     font-size: 0.95rem;
-    color: #64748b;
+    color: #94a3b8;
 }
 
 .analytics-summary strong {
-    color: #2563eb;
+    color: #22d3ee;
     font-size: 1.1rem;
 }
 
@@ -4081,7 +4095,7 @@ const topNeighborhoods = computed(() => {
     margin: 0 0 0.75rem 0;
     font-size: 0.9rem;
     font-weight: 600;
-    color: #475569;
+    color: #94a3b8;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -4101,7 +4115,7 @@ const topNeighborhoods = computed(() => {
 .bar-label {
     width: 40px;
     font-size: 0.75rem;
-    color: #64748b;
+    color: #94a3b8;
     text-align: right;
     flex-shrink: 0;
 }
@@ -4109,7 +4123,7 @@ const topNeighborhoods = computed(() => {
 .bar-track {
     flex: 1;
     height: 18px;
-    background: #e2e8f0;
+    background: rgba(255, 255, 255, 0.1);
     border-radius: 4px;
     overflow: hidden;
 }
@@ -4172,7 +4186,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .bar-row.clickable-bar:hover {
-    background: rgba(59, 130, 246, 0.08);
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .bar-row.clickable-bar:hover .bar-label {
@@ -4196,8 +4210,8 @@ const topNeighborhoods = computed(() => {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: #dbeafe;
-    color: #1d4ed8;
+    background: rgba(59, 130, 246, 0.3);
+    color: #93c5fd;
     font-size: 0.7rem;
     font-weight: 500;
     padding: 2px 8px;
@@ -4208,7 +4222,7 @@ const topNeighborhoods = computed(() => {
 .clear-filter-x {
     background: none;
     border: none;
-    color: #1d4ed8;
+    color: #93c5fd;
     font-size: 0.85rem;
     cursor: pointer;
     padding: 0;
@@ -4219,7 +4233,7 @@ const topNeighborhoods = computed(() => {
 
 .clear-filter-x:hover {
     opacity: 1;
-    color: #1e40af;
+    color: #fff;
 }
 
 /* Weekend row indicator */
@@ -4234,7 +4248,7 @@ const topNeighborhoods = computed(() => {
     gap: 1rem;
     margin-bottom: 0.75rem;
     padding: 0.4rem 0.75rem;
-    background: rgba(0, 0, 0, 0.03);
+    background: rgba(255, 255, 255, 0.05);
     border-radius: 6px;
 }
 
@@ -4243,7 +4257,7 @@ const topNeighborhoods = computed(() => {
     align-items: center;
     gap: 0.3rem;
     font-size: 0.7rem;
-    color: #64748b;
+    color: #94a3b8;
     text-transform: uppercase;
     letter-spacing: 0.3px;
 }
@@ -4270,7 +4284,7 @@ const topNeighborhoods = computed(() => {
     width: 35px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #334155;
+    color: #e2e8f0;
     text-align: right;
     flex-shrink: 0;
 }
@@ -4278,7 +4292,7 @@ const topNeighborhoods = computed(() => {
 .chart-insight {
     margin: 0.75rem 0 0 0;
     font-size: 0.85rem;
-    color: #64748b;
+    color: #94a3b8;
     display: flex;
     align-items: center;
     gap: 0.35rem;
@@ -4289,7 +4303,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .chart-insight strong {
-    color: #2563eb;
+    color: #fbbf24;
 }
 
 .insight-count,
@@ -4330,15 +4344,15 @@ const topNeighborhoods = computed(() => {
 
 .hotspot-name {
     font-size: 0.85rem;
-    color: #1e40af;
+    color: #e2e8f0;
     font-weight: 500;
 }
 
 .hotspot-count {
     font-size: 0.75rem;
     font-weight: 700;
-    color: #0369a1;
-    background: #e0f2fe;
+    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.15);
     padding: 0.15rem 0.4rem;
     border-radius: 10px;
 }
@@ -4346,9 +4360,9 @@ const topNeighborhoods = computed(() => {
 .analytics-expand {
     width: 100%;
     padding: 0.75rem;
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-    color: #64748b;
-    border: 1px solid #e2e8f0;
+    background: linear-gradient(135deg, #334155 0%, #293548 100%);
+    color: #94a3b8;
+    border: 1px solid #475569;
     border-radius: 8px;
     font-size: 0.9rem;
     font-weight: 500;
@@ -4358,7 +4372,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .analytics-expand:hover {
-    background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+    background: linear-gradient(135deg, #3d4f6a 0%, #334155 100%);
     color: #e2e8f0;
 }
 
