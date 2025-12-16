@@ -3985,12 +3985,13 @@ const topNeighborhoods = computed(() => {
 }
 
 .analytics-panel {
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 1.25rem;
     margin-bottom: 1rem;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-    color: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    color: #334155;
 }
 
 .analytics-header {
@@ -4006,11 +4007,11 @@ const topNeighborhoods = computed(() => {
     margin: 0;
     font-size: 1.1rem;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #1e293b;
 }
 
 .analytics-area-name {
-    color: #fbbf24;
+    color: #2563eb;
     font-weight: 700;
 }
 
@@ -4038,9 +4039,9 @@ const topNeighborhoods = computed(() => {
 
 .collapse-btn {
     padding: 0.4rem 0.75rem;
-    background: rgba(255, 255, 255, 0.1);
-    color: #94a3b8;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #e2e8f0;
+    color: #64748b;
+    border: 1px solid #cbd5e1;
     border-radius: 6px;
     font-size: 0.8rem;
     cursor: pointer;
@@ -4048,18 +4049,18 @@ const topNeighborhoods = computed(() => {
 }
 
 .collapse-btn:hover {
-    background: rgba(255, 255, 255, 0.15);
-    color: #e2e8f0;
+    background: #cbd5e1;
+    color: #334155;
 }
 
 .analytics-summary {
     margin: 0 0 1rem 0;
     font-size: 0.95rem;
-    color: #94a3b8;
+    color: #64748b;
 }
 
 .analytics-summary strong {
-    color: #22d3ee;
+    color: #2563eb;
     font-size: 1.1rem;
 }
 
@@ -4080,7 +4081,7 @@ const topNeighborhoods = computed(() => {
     margin: 0 0 0.75rem 0;
     font-size: 0.9rem;
     font-weight: 600;
-    color: #94a3b8;
+    color: #475569;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -4100,7 +4101,7 @@ const topNeighborhoods = computed(() => {
 .bar-label {
     width: 40px;
     font-size: 0.75rem;
-    color: #94a3b8;
+    color: #64748b;
     text-align: right;
     flex-shrink: 0;
 }
@@ -4108,7 +4109,7 @@ const topNeighborhoods = computed(() => {
 .bar-track {
     flex: 1;
     height: 18px;
-    background: rgba(255, 255, 255, 0.1);
+    background: #e2e8f0;
     border-radius: 4px;
     overflow: hidden;
 }
@@ -4171,7 +4172,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .bar-row.clickable-bar:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(59, 130, 246, 0.08);
 }
 
 .bar-row.clickable-bar:hover .bar-label {
@@ -4195,8 +4196,8 @@ const topNeighborhoods = computed(() => {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: rgba(59, 130, 246, 0.3);
-    color: #93c5fd;
+    background: #dbeafe;
+    color: #1d4ed8;
     font-size: 0.7rem;
     font-weight: 500;
     padding: 2px 8px;
@@ -4207,7 +4208,7 @@ const topNeighborhoods = computed(() => {
 .clear-filter-x {
     background: none;
     border: none;
-    color: #93c5fd;
+    color: #1d4ed8;
     font-size: 0.85rem;
     cursor: pointer;
     padding: 0;
@@ -4218,7 +4219,7 @@ const topNeighborhoods = computed(() => {
 
 .clear-filter-x:hover {
     opacity: 1;
-    color: #fff;
+    color: #1e40af;
 }
 
 /* Weekend row indicator */
@@ -4233,7 +4234,7 @@ const topNeighborhoods = computed(() => {
     gap: 1rem;
     margin-bottom: 0.75rem;
     padding: 0.4rem 0.75rem;
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(0, 0, 0, 0.03);
     border-radius: 6px;
 }
 
@@ -4242,7 +4243,7 @@ const topNeighborhoods = computed(() => {
     align-items: center;
     gap: 0.3rem;
     font-size: 0.7rem;
-    color: #94a3b8;
+    color: #64748b;
     text-transform: uppercase;
     letter-spacing: 0.3px;
 }
@@ -4269,7 +4270,7 @@ const topNeighborhoods = computed(() => {
     width: 35px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #334155;
     text-align: right;
     flex-shrink: 0;
 }
@@ -4277,7 +4278,7 @@ const topNeighborhoods = computed(() => {
 .chart-insight {
     margin: 0.75rem 0 0 0;
     font-size: 0.85rem;
-    color: #94a3b8;
+    color: #64748b;
     display: flex;
     align-items: center;
     gap: 0.35rem;
@@ -4288,7 +4289,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .chart-insight strong {
-    color: #fbbf24;
+    color: #2563eb;
 }
 
 .insight-count,
@@ -4329,15 +4330,15 @@ const topNeighborhoods = computed(() => {
 
 .hotspot-name {
     font-size: 0.85rem;
-    color: #e2e8f0;
+    color: #1e40af;
     font-weight: 500;
 }
 
 .hotspot-count {
     font-size: 0.75rem;
     font-weight: 700;
-    color: #22d3ee;
-    background: rgba(34, 211, 238, 0.15);
+    color: #0369a1;
+    background: #e0f2fe;
     padding: 0.15rem 0.4rem;
     border-radius: 10px;
 }
@@ -4345,9 +4346,9 @@ const topNeighborhoods = computed(() => {
 .analytics-expand {
     width: 100%;
     padding: 0.75rem;
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-    color: #94a3b8;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    color: #64748b;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
     font-size: 0.9rem;
     font-weight: 500;
@@ -4357,7 +4358,7 @@ const topNeighborhoods = computed(() => {
 }
 
 .analytics-expand:hover {
-    background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
+    background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
     color: #e2e8f0;
 }
 
