@@ -1,0 +1,51 @@
+Subject: Crime SPA Project - Week 2 Update & Setup
+
+---
+
+Hey Caiden & Charlotte,
+
+I finished the API integration and form today (13/45 pts complete). Pull the latest code and pick which tasks you want to work on!
+
+## Setup Instructions
+
+**1. Backend Server (Project 3 - REST API):**
+Clone/pull the latest version:
+https://github.com/FlamingMachTurtle/webdev-rest
+
+Read the README for setup instructions. Quick version:
+- npm install
+- Download database from tmarrinan/webdev-rest
+- node rest_server.mjs
+
+**2. Frontend (Project 4 - This SPA):**
+Clone/pull the latest version:
+https://github.com/FlamingMachTurtle/webdev-crimespa
+
+Read **TEAM_UPDATE.md** in the root for:
+- What's done (API + form)
+- How to run both servers
+- Task options you can pick from
+- Timeline for Thu/Fri
+
+## Quick Start
+
+```bash
+# Terminal 1: Start backend
+cd webdev-rest
+node rest_server.mjs
+
+# Terminal 2: Start frontend
+cd webdev-crimespa
+npm install  # first time only
+npm run dev
+```
+
+Enter `http://localhost:8000` when the dialog pops up.
+
+## Next Steps
+
+Check TEAM_UPDATE.md for the full task list (25 pts remaining). Pick what you want to work on and let me know, or just start committing!
+
+I'm free after 5pm Thursday if anyone needs help with setup or debugging.
+
+-Eli

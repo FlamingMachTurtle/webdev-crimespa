@@ -4,6 +4,8 @@ import { reactive, ref, onMounted, computed } from 'vue'
 
 let crime_url = ref('');
 let dialog_err = ref(false);
+let dialog_err_msg = ref('');
+let localhost_loading = ref(false);
 
 // data from api - filled after user enters url
 let codes = ref([]);
@@ -24,14 +26,22 @@ let newIncident = reactive({
 let form_error = ref('');
 let form_success = ref(false);
 let form_visible = ref(false); // controls if form is shown or hidden
+let showAdvancedFields = ref(false); // toggle for advanced form fields
+let successPopup = ref(false); // show success popup
+let lastAddedCase = ref(''); // track the last added case number
 
 // filter state
 let filters = reactive({
     start_date: '',
     end_date: '',
     selected_codes: [],      // array of selected crime type codes
-    selected_neighborhood: '' // single neighborhood id or empty for all
+    selected_neighborhood: '', // single neighborhood id or empty for all
+    limit_to_visible: true,   // only show crimes in visible map area (core requirement)
+    max_incidents: 1000       // max incidents to show
 });
+
+// track which neighborhoods are currently visible on map
+let visibleNeighborhoods = ref([]);
 
 // X2: Individual crime markers state
 let crimeMarkers = reactive({});  // object to store markers by case_number
@@ -45,6 +55,18 @@ let tableSort = reactive({
 // X4: Table search state
 let tableSearch = ref('');
 
+// Smart search state
+let smartSearchOpen = ref(false);
+let smartSearchIndex = ref(-1); // currently highlighted suggestion (-1 = none)
+
+// Filter dropdown state (Option A)
+let dateFilter = ref('all');  // 'all', 'today', 'week', 'month', 'custom'
+let typeFilter = ref('all');  // 'all', 'violent', 'property', 'other'
+
+// Map search autocomplete state
+let mapSearchOpen = ref(false);
+let mapSearchIndex = ref(-1);
+
 // C1 + C2 + C3: address search state
 let addressSearch = reactive({
     query: '',
@@ -57,6 +79,20 @@ let addressSearch = reactive({
 
 // B3: neighborhood crime counts
 let neighborhoodCrimeCounts = reactive({});
+
+// Block-level geocoding cache - stores geocoded addresses to avoid repeat API calls
+// Key: "600_MAIN_ST" -> Value: {lat, lng}
+let geocodeCache = reactive({});
+
+// Track which markers are currently being geocoded (loading state)
+// Using ref so Vue properly tracks changes when we add/remove keys
+let geocodingInProgress = ref({});
+
+// Track geocoding progress for each case (0-100)
+let geocodingProgress = ref({});
+
+// Status message shown during geocoding
+let geocodingStatus = ref('');
 
 let map = reactive(
     {
@@ -103,6 +139,17 @@ onMounted(() => {
         maxZoom: 18
     }).addTo(map.leaflet);
     map.leaflet.setMaxBounds([[44.883658, -93.217977], [45.008206, -92.993787]]);
+
+    // Update when map is panned/zoomed (core requirement)
+    map.leaflet.on('moveend', () => {
+        const center = map.leaflet.getCenter();
+        map.center.lat = center.lat;
+        map.center.lng = center.lng;
+        // Store current center address for display (but don't overwrite if user is typing)
+        map.center.address = `${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}`;
+        // Update visible neighborhoods based on map bounds
+        updateVisibleNeighborhoods();
+    });
 
     // Get boundaries for St. Paul neighborhoods
     let district_boundary = new L.geoJson();
@@ -154,6 +201,8 @@ function initializeCrimes() {
             updateNeighborhoodCrimeCounts();
             // B3: Add neighborhood markers
             addNeighborhoodMarkers();
+            // Initialize visible neighborhoods based on current map view
+            updateVisibleNeighborhoods();
         });
 }
 
@@ -162,10 +211,10 @@ function updateNeighborhoodCrimeCounts() {
     neighborhoodCrimeCounts.value = {};
     incidents.value.forEach(inc => {
         const nid = inc.neighborhood_number;
-        if (!neighborhoodCrimeCounts[nid]) {
-            neighborhoodCrimeCounts[nid] = 0;
+        if (!neighborhoodCrimeCounts.value[nid]) {
+            neighborhoodCrimeCounts.value[nid] = 0;
         }
-        neighborhoodCrimeCounts[nid]++;
+        neighborhoodCrimeCounts.value[nid]++;
     });
 }
 
@@ -182,7 +231,7 @@ function addNeighborhoodMarkers() {
     // Add new markers with crime counts
     map.neighborhood_markers.forEach((nm, idx) => {
         const nid = idx + 1; // neighborhood IDs are 1-indexed
-        const count = neighborhoodCrimeCounts[nid] || 0;
+        const count = neighborhoodCrimeCounts.value[nid] || 0;
         
         // Create a custom icon based on crime count
         const color = getColorByCount(count);
@@ -213,6 +262,25 @@ function getColorByCount(count) {
     if (count < 100) return '#FFA500'; // orange
     if (count < 150) return '#FF6347'; // tomato
     return '#DC143C'; // crimson
+}
+
+// Core requirement: determine which neighborhoods are visible on current map view
+function updateVisibleNeighborhoods() {
+    if (!map.leaflet) return;
+    
+    const bounds = map.leaflet.getBounds();
+    const visible = [];
+    
+    // Check each neighborhood marker location against map bounds
+    map.neighborhood_markers.forEach((nm, idx) => {
+        const nid = idx + 1; // neighborhood IDs are 1-indexed
+        const [lat, lng] = nm.location;
+        if (bounds.contains([lat, lng])) {
+            visible.push(nid);
+        }
+    });
+    
+    visibleNeighborhoods.value = visible;
 }
 
 // C1 + C2 + C3: Search for address and center map
@@ -263,12 +331,73 @@ async function searchAddress() {
          .openPopup()
          .addTo(map.leaflet);
 
+        // Extract street name from query for table filtering
+        // e.g., "123 University Ave, St Paul" -> "UNIVERSITY"
+        const streetMatch = extractStreetName(addressSearch.query);
+        
+        if (streetMatch) {
+            // Filter the crime table to show incidents on this street
+            tableSearch.value = streetMatch;
+            
+            // Scroll to the table section after a brief delay (let map animate first)
+            setTimeout(() => {
+                const tableSection = document.querySelector('.table-section');
+                if (tableSection) {
+                    tableSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 800);
+        }
+
     } catch (error) {
         console.error('Search error:', error);
         addressSearch.error = 'Failed to geocode address: ' + error.message;
     } finally {
         addressSearch.searching = false;
     }
+}
+
+// Extract street name from a full address for table filtering
+// e.g., "123 University Ave, St Paul, MN" -> "UNIVERSITY"
+// e.g., "Snelling Avenue" -> "SNELLING"
+function extractStreetName(address) {
+    if (!address) return '';
+    
+    // Common street suffixes to help identify street names
+    const suffixes = ['AVE', 'AVENUE', 'ST', 'STREET', 'BLVD', 'BOULEVARD', 'DR', 'DRIVE', 
+                      'RD', 'ROAD', 'LN', 'LANE', 'WAY', 'CT', 'COURT', 'PL', 'PLACE',
+                      'PKWY', 'PARKWAY', 'CIR', 'CIRCLE'];
+    
+    // Clean up the address - uppercase and remove extra spaces
+    let cleaned = address.toUpperCase().trim();
+    
+    // Remove city/state/zip if present (everything after first comma usually)
+    const commaIndex = cleaned.indexOf(',');
+    if (commaIndex > 0) {
+        cleaned = cleaned.substring(0, commaIndex);
+    }
+    
+    // Split into words
+    const words = cleaned.split(/\s+/);
+    
+    // Try to find the street name (word before a suffix, or just the main word)
+    for (let i = 0; i < words.length; i++) {
+        if (suffixes.includes(words[i]) && i > 0) {
+            // Return the word before the suffix (the actual street name)
+            // Skip numbers at the start
+            let streetName = words[i - 1];
+            if (!/^\d+$/.test(streetName)) {
+                return streetName;
+            }
+        }
+    }
+    
+    // Fallback: return the longest non-numeric word (likely the street name)
+    const nonNumericWords = words.filter(w => !/^\d+X*$/.test(w) && w.length > 2);
+    if (nonNumericWords.length > 0) {
+        return nonNumericWords.reduce((a, b) => a.length >= b.length ? a : b);
+    }
+    
+    return cleaned;
 }
 
 // Clear search marker and reset search
@@ -285,37 +414,79 @@ function clearSearch() {
 
 // submit new incident to api
 function submitIncident() {
-    // check all fields filled
-    if (!newIncident.case_number || !newIncident.date || !newIncident.time ||
-        !newIncident.code || !newIncident.incident || !newIncident.police_grid ||
-        !newIncident.neighborhood_number || !newIncident.block) {
-        form_error.value = 'fill out all fields';
+    // Check required fields only
+    if (!newIncident.code || !newIncident.neighborhood_number || !newIncident.block) {
+        form_error.value = 'Please fill out Crime Type, Neighborhood, and Address';
         return;
+    }
+    
+    // Auto-generate case number if not provided
+    let caseNumber = newIncident.case_number;
+    if (!caseNumber) {
+        const year = new Date().getFullYear().toString().slice(-2);
+        const randomNum = Math.floor(100000 + Math.random() * 900000);
+        caseNumber = `${year}-${randomNum}`;
+    }
+    
+    // Auto-generate police grid if not set
+    let policeGrid = newIncident.police_grid;
+    if (!policeGrid) {
+        policeGrid = neighborhoodGridMap[newIncident.neighborhood_number] || 87;
+    }
+    
+    // Auto-fill incident description if empty
+    let incidentDesc = newIncident.incident;
+    if (!incidentDesc) {
+        const selectedCode = codes.value.find(c => c.code == newIncident.code);
+        incidentDesc = selectedCode ? selectedCode.type : 'Incident';
     }
     
     form_error.value = '';
     form_success.value = false;
     let api = crime_url.value.replace(/\/+$/, '');
     
+    // Ensure time has seconds (HH:MM:SS format)
+    let timeStr = newIncident.time;
+    if (timeStr && timeStr.length === 5) {
+        timeStr = timeStr + ':00'; // Add seconds if missing
+    }
+    
+    const payload = {
+        case_number: caseNumber,
+        date: newIncident.date,
+        time: timeStr,
+        code: Number(newIncident.code),
+        incident: incidentDesc,
+        police_grid: Number(policeGrid),
+        neighborhood_number: Number(newIncident.neighborhood_number),
+        block: newIncident.block.toUpperCase()
+    };
+    
+    console.log('Submitting incident:', payload);
+    
     // send to api
     fetch(api + '/new-incident', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            case_number: newIncident.case_number,
-            date: newIncident.date,
-            time: newIncident.time,
-            code: Number(newIncident.code),
-            incident: newIncident.incident,
-            police_grid: Number(newIncident.police_grid),
-            neighborhood_number: Number(newIncident.neighborhood_number),
-            block: newIncident.block
-        })
+        body: JSON.stringify(payload)
     })
-    .then(res => res.json())
+    .then(res => {
+        if (!res.ok) {
+            return res.text().then(text => {
+                throw new Error(`Server error: ${res.status} - ${text}`);
+            });
+        }
+        // Server may return "OK" as text or JSON
+        return res.text();
+    })
     .then(data => {
         console.log('incident added:', data);
         form_success.value = true;
+        lastAddedCase.value = caseNumber;
+        
+        // Show success popup
+        successPopup.value = true;
+        
         // clear form
         newIncident.case_number = '';
         newIncident.date = '';
@@ -325,19 +496,100 @@ function submitIncident() {
         newIncident.police_grid = '';
         newIncident.neighborhood_number = '';
         newIncident.block = '';
-        // update crime counts
-        updateNeighborhoodCrimeCounts();
-        addNeighborhoodMarkers();
+        
+        // Refresh the incidents list
+        initializeCrimes();
     })
     .catch(err => {
-        form_error.value = 'failed to add incident';
-        console.log('error:', err);
+        form_error.value = err.message || 'Failed to add incident';
+        console.error('Submit error:', err);
     });
 }
 
 // show or hide the incident form
 function toggleForm() {
     form_visible.value = !form_visible.value;
+    
+    // Auto-populate date and time when opening form
+    if (form_visible.value) {
+        const now = new Date();
+        if (!newIncident.date) {
+            newIncident.date = now.toISOString().split('T')[0]; // YYYY-MM-DD
+        }
+        if (!newIncident.time) {
+            newIncident.time = now.toTimeString().slice(0, 5); // HH:MM
+        }
+        form_error.value = '';
+        form_success.value = false;
+    }
+}
+
+// Auto-fill incident description based on crime type
+function autofillIncidentType() {
+    if (newIncident.code && !newIncident.incident) {
+        const selectedCode = codes.value.find(c => c.code == newIncident.code);
+        if (selectedCode) {
+            newIncident.incident = selectedCode.type;
+        }
+    }
+}
+
+// Auto-assign a reasonable police grid based on neighborhood
+// These are approximate mappings - not exact but good defaults
+const neighborhoodGridMap = {
+    1: 75, 2: 61, 3: 82, 4: 63, 5: 78,
+    6: 85, 7: 93, 8: 48, 9: 52, 10: 51,
+    11: 65, 12: 86, 13: 99, 14: 107, 15: 112,
+    16: 116, 17: 121
+};
+
+function autofillPoliceGrid() {
+    if (newIncident.neighborhood_number && !newIncident.police_grid) {
+        newIncident.police_grid = neighborhoodGridMap[newIncident.neighborhood_number] || 87;
+    }
+}
+
+// Jump to the newly added incident in the table
+function jumpToIncident() {
+    successPopup.value = false;
+    form_visible.value = false;
+    
+    // Retry mechanism to find the row (data might still be loading)
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    function findAndHighlight() {
+        attempts++;
+        const caseNum = lastAddedCase.value;
+        const row = document.querySelector(`tr[data-case="${caseNum}"]`);
+        
+        if (row) {
+            console.log('Found row for case:', caseNum);
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('highlight-row');
+            // Keep highlight for 5 seconds
+            setTimeout(() => row.classList.remove('highlight-row'), 5000);
+        } else if (attempts < maxAttempts) {
+            // Try again in 300ms
+            console.log(`Attempt ${attempts}: Row not found yet, retrying...`);
+            setTimeout(findAndHighlight, 300);
+        } else {
+            // Final fallback: just scroll to table
+            console.log('Could not find row, scrolling to table');
+            const table = document.querySelector('.crime-table');
+            if (table) {
+                table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+    }
+    
+    // Start searching after a short delay
+    setTimeout(findAndHighlight, 500);
+}
+
+// Close success popup
+function closeSuccessPopup() {
+    successPopup.value = false;
 }
 
 // Function called when user presses 'OK' on dialog box
@@ -346,28 +598,89 @@ function closeDialog() {
     let url_input = document.getElementById('dialog-url');
     if (crime_url.value !== '' && url_input.checkValidity()) {
         dialog_err.value = false;
+        dialog_err_msg.value = '';
         dialog.close();
         initializeCrimes();
     }
     else {
         dialog_err.value = true;
+        dialog_err_msg.value = 'Error: must enter valid URL';
+    }
+}
+
+// Quick-fill localhost:8000 with connection test
+async function useLocalhost() {
+    const testUrl = 'http://localhost:8000';
+    localhost_loading.value = true;
+    dialog_err.value = false;
+    dialog_err_msg.value = '';
+    
+    try {
+        // Test connection with a quick fetch to /codes endpoint
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const response = await fetch(`${testUrl}/codes`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+            // Connection successful - close dialog and load data
+            crime_url.value = testUrl;
+            let dialog = document.getElementById('rest-dialog');
+            dialog.close();
+            initializeCrimes();
+        } else {
+            throw new Error('Server returned error');
+        }
+    } catch (error) {
+        // Show error message
+        dialog_err.value = true;
+        if (error.name === 'AbortError') {
+            dialog_err_msg.value = '⚠️ Connection timed out. Is the server running?';
+        } else {
+            dialog_err_msg.value = '⚠️ Cannot connect to localhost:8000. Start the server with: node rest_server.mjs';
+        }
+        console.log('Localhost connection failed:', error);
+    } finally {
+        localhost_loading.value = false;
     }
 }
 
 // computed property - filters incidents based on current filter selections
 const filteredIncidents = computed(() => {
+    // Helper: get date string for comparisons
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
     // First apply filters
     let filtered = incidents.value.filter(inc => {
-        // date filter
-        if (filters.start_date && inc.date < filters.start_date) return false;
-        if (filters.end_date && inc.date > filters.end_date) return false;
-        
-        // crime type filter (if any selected)
-        if (filters.selected_codes.length > 0) {
-            if (!filters.selected_codes.includes(inc.code)) return false;
+        // Core requirement: filter by visible map area
+        if (filters.limit_to_visible && visibleNeighborhoods.value.length > 0) {
+            if (!visibleNeighborhoods.value.includes(inc.neighborhood_number)) return false;
         }
         
-        // neighborhood filter
+        // Date filter dropdown (new Option A style)
+        if (dateFilter.value === 'today') {
+            if (inc.date !== todayStr) return false;
+        } else if (dateFilter.value === 'week') {
+            if (inc.date < weekAgo) return false;
+        } else if (dateFilter.value === 'month') {
+            if (inc.date < monthAgo) return false;
+        } else if (dateFilter.value === 'custom') {
+            // Use custom date range inputs
+            if (filters.start_date && inc.date < filters.start_date) return false;
+            if (filters.end_date && inc.date > filters.end_date) return false;
+        }
+        
+        // Type filter dropdown (new Option A style)
+        if (typeFilter.value !== 'all') {
+            const category = getCrimeCategory(inc.code);
+            if (typeFilter.value !== category) return false;
+        }
+        
+        // Neighborhood filter
         if (filters.selected_neighborhood !== '') {
             if (inc.neighborhood_number != filters.selected_neighborhood) return false;
         }
@@ -390,6 +703,11 @@ const filteredIncidents = computed(() => {
         
         return true;
     });
+    
+    // Apply max incidents limit
+    if (filters.max_incidents && filters.max_incidents < filtered.length) {
+        filtered = filtered.slice(0, filters.max_incidents);
+    }
     
     // X3: Apply sorting
     filtered.sort((a, b) => {
@@ -433,6 +751,176 @@ const filteredIncidents = computed(() => {
     });
     
     return filtered;
+});
+
+// Smart search: generate categorized suggestions based on search input
+const smartSearchSuggestions = computed(() => {
+    const query = tableSearch.value.trim().toLowerCase();
+    if (!query || query.length < 2) return [];
+    
+    const suggestions = [];
+    const MAX_PER_CATEGORY = 3;
+    
+    // Category 1: Case numbers (exact or partial match)
+    const caseMatches = incidents.value
+        .filter(inc => inc.case_number.toString().toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => ({
+            type: 'case',
+            label: inc.case_number,
+            display: `Case #${inc.case_number}`,
+            incident: inc
+        }));
+    suggestions.push(...caseMatches);
+    
+    // Category 2: Addresses/Blocks (unique blocks that match)
+    const seenBlocks = new Set();
+    const blockMatches = incidents.value
+        .filter(inc => {
+            const block = inc.block.toLowerCase();
+            if (seenBlocks.has(block)) return false;
+            if (!block.includes(query)) return false;
+            seenBlocks.add(block);
+            return true;
+        })
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => ({
+            type: 'address',
+            label: inc.block,
+            display: inc.block,
+            incident: inc
+        }));
+    suggestions.push(...blockMatches);
+    
+    // Category 3: Crime types (from codes that match, linked to first incident with that code)
+    const crimeTypeMatches = codes.value
+        .filter(c => c.type.toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(c => {
+            const firstIncident = incidents.value.find(inc => inc.code === c.code);
+            return {
+                type: 'crime',
+                label: c.type,
+                display: c.type,
+                code: c.code,
+                incident: firstIncident || null
+            };
+        })
+        .filter(s => s.incident !== null); // only include if there's a matching incident
+    suggestions.push(...crimeTypeMatches);
+    
+    return suggestions.slice(0, 8); // max 8 total suggestions
+});
+
+// Active filters: generate list of active filter chips for display
+const activeFilters = computed(() => {
+    const chips = [];
+    
+    // Date range
+    if (filters.start_date && filters.end_date) {
+        chips.push({
+            id: 'date-range',
+            label: `${filters.start_date} to ${filters.end_date}`,
+            type: 'date',
+            clear: () => { filters.start_date = ''; filters.end_date = ''; }
+        });
+    } else if (filters.start_date) {
+        chips.push({
+            id: 'start-date',
+            label: `From ${filters.start_date}`,
+            type: 'date',
+            clear: () => { filters.start_date = ''; }
+        });
+    } else if (filters.end_date) {
+        chips.push({
+            id: 'end-date',
+            label: `Until ${filters.end_date}`,
+            type: 'date',
+            clear: () => { filters.end_date = ''; }
+        });
+    }
+    
+    // Selected crime types
+    filters.selected_codes.forEach(code => {
+        const crimeType = codes.value.find(c => c.code === code);
+        if (crimeType) {
+            chips.push({
+                id: `crime-${code}`,
+                label: crimeType.type,
+                type: 'crime',
+                clear: () => { filters.selected_codes = filters.selected_codes.filter(c => c !== code); }
+            });
+        }
+    });
+    
+    // Selected neighborhood
+    if (filters.selected_neighborhood) {
+        const neighborhood = neighborhoods.value.find(n => n.id == filters.selected_neighborhood);
+        if (neighborhood) {
+            chips.push({
+                id: 'neighborhood',
+                label: neighborhood.name,
+                type: 'neighborhood',
+                clear: () => { filters.selected_neighborhood = ''; }
+            });
+        }
+    }
+    
+    return chips;
+});
+
+// Check if any filters are active (for showing Clear button)
+const hasActiveFilters = computed(() => {
+    return dateFilter.value !== 'all' || 
+           typeFilter.value !== 'all' || 
+           filters.selected_neighborhood !== '' ||
+           tableSearch.value.trim() !== '';
+});
+
+// Map search: generate suggestions from neighborhoods and common addresses
+const mapSearchSuggestions = computed(() => {
+    const query = addressSearch.query.trim().toLowerCase();
+    if (!query || query.length < 2) return [];
+    
+    const suggestions = [];
+    const MAX_PER_CATEGORY = 4;
+    
+    // Category 1: Neighborhoods that match
+    const neighborhoodMatches = neighborhoods.value
+        .filter(n => n.name.toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(n => ({
+            type: 'neighborhood',
+            label: n.name,
+            display: n.name,
+            id: n.id
+        }));
+    suggestions.push(...neighborhoodMatches);
+    
+    // Category 2: Unique street names from incidents
+    const seenStreets = new Set();
+    const streetMatches = incidents.value
+        .filter(inc => {
+            // Extract street name from block (e.g., "7XX SNELLING AVE" -> "SNELLING AVE")
+            const streetPart = inc.block.replace(/^\d+X*\s+/, '').toUpperCase();
+            if (seenStreets.has(streetPart)) return false;
+            if (!streetPart.toLowerCase().includes(query)) return false;
+            seenStreets.add(streetPart);
+            return true;
+        })
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => {
+            const streetPart = inc.block.replace(/^\d+X*\s+/, '').toUpperCase();
+            return {
+                type: 'street',
+                label: streetPart,
+                display: streetPart + ', St Paul',
+                block: inc.block
+            };
+        });
+    suggestions.push(...streetMatches);
+    
+    return suggestions.slice(0, 6);
 });
 
 // categorize crime by type for color coding
@@ -484,8 +972,82 @@ function cleanAddress(address) {
     return address.replace(/^(\d+)X\s/, '$10 ');
 }
 
-// X2: Add or toggle marker for a single crime incident
-function toggleCrimeMarker(incident) {
+// Block-level geocoding: converts "6XX MAIN ST" to coordinates on the 600 block
+async function geocodeBlock(address, neighborhoodNumber) {
+    // Parse: "6XX MAIN ST" -> "600 MAIN ST" (replace X's with 0's in block number)
+    const cleanedAddr = address.replace(/^(\d+)X+\s/i, (match, prefix) => prefix + '00 ');
+    const cacheKey = cleanedAddr.replace(/\s+/g, '_').toUpperCase();
+    
+    // Return cached result if available (instant)
+    if (geocodeCache[cacheKey]) {
+        console.log('Geocode cache hit:', cacheKey);
+        return { ...geocodeCache[cacheKey], cached: true };
+    }
+    
+    try {
+        // Geocode with "St Paul, MN" suffix for accuracy
+        const query = `${cleanedAddr}, St Paul, MN`;
+        console.log('Geocoding:', query);
+        
+        // Create abort controller for timeout (3 seconds max)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
+            { signal: controller.signal }
+        );
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error('Geocoding service error');
+        }
+        
+        const results = await response.json();
+        
+        if (results && results.length > 0) {
+            const result = results[0];
+            const location = {
+                lat: parseFloat(result.lat),
+                lng: parseFloat(result.lon),
+                accuracy: 'block'
+            };
+            
+            // Cache the result
+            geocodeCache[cacheKey] = location;
+            console.log('Geocoded successfully:', cleanedAddr, location);
+            return { ...location, cached: false };
+        }
+        
+        // Geocoding returned no results - fall back to neighborhood
+        console.log('Geocoding returned no results for:', query);
+        return getFallbackLocation(neighborhoodNumber);
+        
+    } catch (error) {
+        // Handle timeout or other errors gracefully
+        if (error.name === 'AbortError') {
+            console.log('Geocoding timed out, using neighborhood fallback');
+        } else {
+            console.error('Geocoding failed:', error);
+        }
+        return getFallbackLocation(neighborhoodNumber);
+    }
+}
+
+// Fallback: return neighborhood center when geocoding fails
+function getFallbackLocation(neighborhoodNumber) {
+    const nIdx = neighborhoodNumber - 1;
+    if (nIdx >= 0 && nIdx < map.neighborhood_markers.length) {
+        const [lat, lng] = map.neighborhood_markers[nIdx].location;
+        return { lat, lng, accuracy: 'neighborhood' };
+    }
+    // Ultimate fallback: city center
+    return { lat: map.center.lat, lng: map.center.lng, accuracy: 'city' };
+}
+
+// X2: Add or toggle marker for a single crime incident (with block-level geocoding)
+async function toggleCrimeMarker(incident) {
     const caseNum = incident.case_number;
     
     // If marker exists, remove it
@@ -495,52 +1057,116 @@ function toggleCrimeMarker(incident) {
         return;
     }
     
-    // Try to geocode the address and add marker
-    const cleanAddr = cleanAddress(incident.block);
-    const geocodeUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanAddr + ', St. Paul, Minnesota')}&format=json&limit=1`;
+    // Prevent double-clicks while geocoding
+    if (geocodingInProgress.value[caseNum]) {
+        return;
+    }
     
-    fetch(geocodeUrl)
-        .then(res => res.json())
-        .then(results => {
-            if (results && results.length > 0) {
-                const result = results[0];
-                const lat = parseFloat(result.lat);
-                const lng = parseFloat(result.lon);
-                
-                // Create custom marker (different color from neighborhood markers)
-                const crimeIcon = L.icon({
-                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
-                            <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#9333ea" stroke="white" stroke-width="1"/>
-                            <circle cx="12" cy="13" r="5" fill="white"/>
-                        </svg>
-                    `),
-                    iconSize: [24, 32],
-                    iconAnchor: [12, 32],
-                    popupAnchor: [0, -32]
-                });
-                
-                // Build popup content
-                const popupContent = `
-                    <div style="width: 220px;">
-                        <b>Crime Details</b><br/>
-                        <strong>Case:</strong> ${incident.case_number}<br/>
-                        <strong>Date:</strong> ${incident.date}<br/>
-                        <strong>Time:</strong> ${incident.time}<br/>
-                        <strong>Incident:</strong> ${incident.incident}<br/>
-                        <strong>Address:</strong> ${cleanAddr}<br/>
-                        <button style="margin-top: 0.5rem; padding: 0.4rem 0.8rem; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;" onclick="alert('Delete via table button')">Delete</button>
-                    </div>
-                `;
-                
-                const marker = L.marker([lat, lng], { icon: crimeIcon })
-                    .bindPopup(popupContent)
-                    .addTo(map.leaflet);
-                
-                crimeMarkers[caseNum] = marker;
-            }
-        })
-        .catch(err => console.log('Geocoding error:', err));
+    // Set loading state - use spread to trigger Vue reactivity
+    geocodingInProgress.value = { ...geocodingInProgress.value, [caseNum]: true };
+    
+    // Initialize progress at 0
+    geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: 0 };
+    
+    // Animate progress from 0 to 85% over ~2.5 seconds (simulated progress during API call)
+    const progressInterval = setInterval(() => {
+        const current = geocodingProgress.value[caseNum] || 0;
+        if (current < 85) {
+            // Ease-out: slow down as we approach 85%
+            const increment = Math.max(1, (85 - current) / 10);
+            geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: Math.min(85, current + increment) };
+        }
+    }, 100);
+    
+    // Show status message
+    const cleanAddr = cleanAddress(incident.block);
+    geocodingStatus.value = `📍 Locating "${cleanAddr}" on map...`;
+    
+    try {
+        // Geocode the block address for accurate placement
+        const location = await geocodeBlock(incident.block, incident.neighborhood_number);
+        
+        // Stop the simulated progress and jump to 100%
+        clearInterval(progressInterval);
+        geocodingProgress.value = { ...geocodingProgress.value, [caseNum]: 100 };
+        
+        // Add small random offset (~50m for block-level, ~200m for neighborhood fallback)
+        // This prevents markers from stacking exactly on top of each other
+        const offsetScale = location.accuracy === 'block' ? 0.0008 : 0.003;
+        const lat = location.lat + (Math.random() - 0.5) * offsetScale;
+        const lng = location.lng + (Math.random() - 0.5) * offsetScale;
+        
+        // Update status based on result
+        if (location.accuracy === 'block') {
+            geocodingStatus.value = `✅ Found "${cleanAddr}" - placing marker...`;
+        } else {
+            geocodingStatus.value = `⚠️ Couldn't find exact location, using neighborhood center...`;
+        }
+        
+        // Create custom purple marker
+        const crimeIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
+                    <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#9333ea" stroke="white" stroke-width="1"/>
+                    <circle cx="12" cy="13" r="5" fill="white"/>
+                </svg>
+            `),
+            iconSize: [24, 32],
+            iconAnchor: [12, 32],
+            popupAnchor: [0, -32]
+        });
+        
+        // Build popup content with accuracy indicator
+        const accuracyText = location.accuracy === 'block' 
+            ? '📍 Block-level accuracy' 
+            : '⚠️ Approximate (neighborhood center)';
+        const accuracyColor = location.accuracy === 'block' ? '#2e7d32' : '#f57c00';
+        
+        const popupContent = `
+            <div style="width: 240px;">
+                <b>Crime Details</b><br/>
+                <em style="color:${accuracyColor}; font-size: 0.85em;">${accuracyText}</em><br/>
+                <strong>Case:</strong> ${incident.case_number}<br/>
+                <strong>Date:</strong> ${incident.date}<br/>
+                <strong>Time:</strong> ${incident.time}<br/>
+                <strong>Incident:</strong> ${incident.incident}<br/>
+                <strong>Address:</strong> ${cleanAddr}
+            </div>
+        `;
+        
+        const marker = L.marker([lat, lng], { icon: crimeIcon })
+            .bindPopup(popupContent)
+            .addTo(map.leaflet);
+        
+        crimeMarkers[caseNum] = marker;
+        
+        // Pan map to marker and open popup immediately
+        map.leaflet.setView([lat, lng], 15, { animate: true });
+        setTimeout(() => marker.openPopup(), 300);
+        
+        // Scroll page to show map
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        
+    } catch (error) {
+        console.error('Failed to place marker:', error);
+        geocodingStatus.value = '❌ Failed to place marker';
+        clearInterval(progressInterval);
+    } finally {
+        // Clear loading state - create new object without the key to trigger reactivity
+        const { [caseNum]: _, ...rest } = geocodingInProgress.value;
+        geocodingInProgress.value = rest;
+        
+        // Clear progress state after a brief delay (let user see 100%)
+        setTimeout(() => {
+            const { [caseNum]: __, ...progressRest } = geocodingProgress.value;
+            geocodingProgress.value = progressRest;
+        }, 300);
+        
+        // Clear status message after a short delay
+        setTimeout(() => {
+            geocodingStatus.value = '';
+        }, 2000);
+    }
 }
 
 // X3: Handle table column sorting
@@ -561,47 +1187,330 @@ function getSortIndicator(field) {
     return tableSort.direction === 'asc' ? ' ▲' : ' ▼';
 }
 
+// Smart search: get category label for display
+function getCategoryLabel(type) {
+    switch(type) {
+        case 'case': return 'Case #';
+        case 'address': return 'Address';
+        case 'crime': return 'Crime Type';
+        default: return '';
+    }
+}
+
+// Smart search: highlight matching text in suggestion
+function highlightMatch(text, query) {
+    if (!query.trim()) return text;
+    const regex = new RegExp(`(${query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<mark>$1</mark>');
+}
+
+// Smart search: handle blur to close dropdown (with delay for click to register)
+function handleSearchBlur() {
+    setTimeout(() => {
+        smartSearchOpen.value = false;
+        smartSearchIndex.value = -1;
+    }, 150);
+}
+
+// Smart search: clear search and reset state
+function clearSmartSearch() {
+    tableSearch.value = '';
+    smartSearchOpen.value = false;
+    smartSearchIndex.value = -1;
+}
+
+// Smart search: handle keyboard navigation
+function handleSearchKeydown(event) {
+    const suggestions = smartSearchSuggestions.value;
+    
+    if (!smartSearchOpen.value || suggestions.length === 0) {
+        // If dropdown is closed and user presses down, open it
+        if (event.key === 'ArrowDown' && tableSearch.value.trim().length >= 2) {
+            smartSearchOpen.value = true;
+            smartSearchIndex.value = 0;
+            event.preventDefault();
+        }
+        return;
+    }
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            smartSearchIndex.value = (smartSearchIndex.value + 1) % suggestions.length;
+            break;
+        case 'ArrowUp':
+            event.preventDefault();
+            smartSearchIndex.value = smartSearchIndex.value <= 0 
+                ? suggestions.length - 1 
+                : smartSearchIndex.value - 1;
+            break;
+        case 'Enter':
+            event.preventDefault();
+            if (smartSearchIndex.value >= 0 && smartSearchIndex.value < suggestions.length) {
+                selectSuggestion(suggestions[smartSearchIndex.value]);
+            }
+            break;
+        case 'Escape':
+            smartSearchOpen.value = false;
+            smartSearchIndex.value = -1;
+            break;
+    }
+}
+
+// Smart search: select a suggestion and jump to the incident
+function selectSuggestion(suggestion) {
+    smartSearchOpen.value = false;
+    smartSearchIndex.value = -1;
+    
+    if (!suggestion.incident) return;
+    
+    const caseNum = suggestion.incident.case_number;
+    
+    // Clear search to show all results (so we can find the row)
+    tableSearch.value = '';
+    
+    // Jump to the incident in the table
+    jumpToIncidentByCase(caseNum);
+}
+
+// Jump to a specific incident by case number
+function jumpToIncidentByCase(caseNum) {
+    // Retry mechanism to find the row (data might still be rendering)
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    function findAndHighlight() {
+        attempts++;
+        const row = document.querySelector(`tr[data-case="${caseNum}"]`);
+        
+        if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('highlight-row');
+            // Keep highlight for 5 seconds
+            setTimeout(() => row.classList.remove('highlight-row'), 5000);
+        } else if (attempts < maxAttempts) {
+            // Try again in 100ms
+            setTimeout(findAndHighlight, 100);
+        } else {
+            // Final fallback: scroll to table
+            const table = document.querySelector('.crime-table');
+            if (table) {
+                table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+    }
+    
+    // Start searching after a short delay to let Vue re-render
+    setTimeout(findAndHighlight, 50);
+}
+
+// Filter panel: clear all filters
+function clearAllFilters() {
+    // Reset Option A dropdowns
+    dateFilter.value = 'all';
+    typeFilter.value = 'all';
+    filters.selected_neighborhood = '';
+    // Reset custom date range
+    filters.start_date = '';
+    filters.end_date = '';
+    // Clear search
+    tableSearch.value = '';
+}
+
+// Filter panel: toggle quick category filter (Violent/Property/Other)
+function toggleCategoryFilter(category) {
+    // Get all codes in this category
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    
+    // Check if all codes in this category are already selected
+    const allSelected = categoryCodes.every(code => filters.selected_codes.includes(code));
+    
+    if (allSelected) {
+        // Remove all codes in this category
+        filters.selected_codes = filters.selected_codes.filter(code => !categoryCodes.includes(code));
+    } else {
+        // Add all codes in this category (without duplicates)
+        const newCodes = [...new Set([...filters.selected_codes, ...categoryCodes])];
+        filters.selected_codes = newCodes;
+    }
+}
+
+// Check if a category filter is active
+function isCategoryActive(category) {
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    return categoryCodes.length > 0 && categoryCodes.every(code => filters.selected_codes.includes(code));
+}
+
+// Map search: handle blur to close dropdown
+function handleMapSearchBlur() {
+    setTimeout(() => {
+        mapSearchOpen.value = false;
+        mapSearchIndex.value = -1;
+    }, 150);
+}
+
+// Map search: handle keyboard navigation
+function handleMapSearchKeydown(event) {
+    const suggestions = mapSearchSuggestions.value;
+    
+    if (!mapSearchOpen.value || suggestions.length === 0) {
+        if (event.key === 'ArrowDown' && addressSearch.query.trim().length >= 2) {
+            mapSearchOpen.value = true;
+            mapSearchIndex.value = 0;
+            event.preventDefault();
+        }
+        return;
+    }
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            mapSearchIndex.value = (mapSearchIndex.value + 1) % suggestions.length;
+            break;
+        case 'ArrowUp':
+            event.preventDefault();
+            mapSearchIndex.value = mapSearchIndex.value <= 0 
+                ? suggestions.length - 1 
+                : mapSearchIndex.value - 1;
+            break;
+        case 'Enter':
+            event.preventDefault();
+            if (mapSearchIndex.value >= 0 && mapSearchIndex.value < suggestions.length) {
+                selectMapSuggestion(suggestions[mapSearchIndex.value]);
+            } else {
+                searchAddress(); // Normal search if no suggestion selected
+            }
+            break;
+        case 'Escape':
+            mapSearchOpen.value = false;
+            mapSearchIndex.value = -1;
+            break;
+    }
+}
+
+// Map search: select a suggestion
+function selectMapSuggestion(suggestion) {
+    mapSearchOpen.value = false;
+    mapSearchIndex.value = -1;
+    
+    if (suggestion.type === 'neighborhood') {
+        // Pan to neighborhood center and filter by neighborhood
+        const nIdx = suggestion.id - 1;
+        if (nIdx >= 0 && nIdx < map.neighborhood_markers.length) {
+            const [lat, lng] = map.neighborhood_markers[nIdx].location;
+            map.leaflet.setView([lat, lng], 14, { animate: true });
+            
+            // Also filter the table to this neighborhood
+            filters.selected_neighborhood = suggestion.id;
+            
+            // Scroll to table
+            setTimeout(() => {
+                const tableSection = document.querySelector('.table-section');
+                if (tableSection) {
+                    tableSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 800);
+        }
+        addressSearch.query = suggestion.display;
+    } else if (suggestion.type === 'street') {
+        // Search for this street and filter table
+        addressSearch.query = suggestion.display;
+        searchAddress();
+    }
+}
+
+// Get map search category label
+function getMapCategoryLabel(type) {
+    switch(type) {
+        case 'neighborhood': return 'Neighborhood';
+        case 'street': return 'Street';
+        default: return '';
+    }
+}
+
 </script>
 
 <template>
     <dialog id="rest-dialog" open>
-        <h1 class="dialog-header">St. Paul Crime REST API</h1>
-        <label class="dialog-label">URL: </label>
-        <input id="dialog-url" class="dialog-input" type="url" v-model="crime_url" placeholder="http://localhost:8000" />
-        <p class="dialog-error" v-if="dialog_err">Error: must enter valid URL</p>
-        <br/>
-        <button class="button" type="button" @click="closeDialog">OK</button>
+        <div class="dialog-content">
+            <h1 class="dialog-header">St. Paul Crime Map</h1>
+            <p class="dialog-subtitle">Connect to the REST API to load crime data</p>
+            
+            <div class="dialog-input-group">
+                <label class="dialog-label">API Server URL</label>
+                <input id="dialog-url" class="dialog-input" type="url" v-model="crime_url" placeholder="http://localhost:8000" />
+            </div>
+            
+            <p class="dialog-error" v-if="dialog_err">{{ dialog_err_msg }}</p>
+            
+            <div class="dialog-buttons">
+                <button class="button localhost-btn" type="button" @click="useLocalhost" :disabled="localhost_loading">
+                    {{ localhost_loading ? 'Connecting...' : 'Quick Connect' }}
+                </button>
+                <button class="button ok-btn" type="button" @click="closeDialog">Connect</button>
+            </div>
+            
+            <p class="dialog-hint">Quick Connect uses localhost:8000</p>
+        </div>
     </dialog>
     
     <!-- main layout - map + button -->
     <div class="main-layout">
         <div id="leafletmap"></div>
         
-        <!-- C1: Address search input UI -->
+        <!-- C1: Address search with autocomplete -->
         <div class="search-container">
             <div class="search-box">
                 <input 
                     v-model="addressSearch.query" 
                     type="text" 
-                    placeholder="Search for an address in St. Paul..."
-                    @keyup.enter="searchAddress"
+                    placeholder="Search address, street, or neighborhood..."
+                    @focus="mapSearchOpen = true"
+                    @blur="handleMapSearchBlur"
+                    @keydown="handleMapSearchKeydown"
                     class="search-input"
+                    autocomplete="off"
                 />
                 <button 
                     class="search-button" 
                     @click="searchAddress"
                     :disabled="addressSearch.searching"
                 >
-                    {{ addressSearch.searching ? 'Searching...' : 'Search' }}
+                    {{ addressSearch.searching ? '...' : 'Go' }}
                 </button>
                 <button 
+                    v-if="addressSearch.marker"
                     class="clear-search-button" 
                     @click="clearSearch"
-                    :disabled="!addressSearch.marker"
                     title="Remove search marker"
                 >
                     ✕
                 </button>
+                
+                <!-- Map search dropdown -->
+                <div 
+                    v-if="mapSearchOpen && mapSearchSuggestions.length > 0" 
+                    class="map-search-dropdown"
+                >
+                    <div 
+                        v-for="(suggestion, index) in mapSearchSuggestions" 
+                        :key="`${suggestion.type}-${suggestion.label}`"
+                        class="map-search-item"
+                        :class="{ 
+                            'selected': index === mapSearchIndex,
+                            [`type-${suggestion.type}`]: true
+                        }"
+                        @mousedown.prevent="selectMapSuggestion(suggestion)"
+                        @mouseenter="mapSearchIndex = index"
+                    >
+                        <span class="map-suggestion-category">{{ getMapCategoryLabel(suggestion.type) }}</span>
+                        <span class="map-suggestion-text" v-html="highlightMatch(suggestion.display, addressSearch.query)"></span>
+                    </div>
+                </div>
             </div>
             <p v-if="addressSearch.error" class="search-error">{{ addressSearch.error }}</p>
         </div>
@@ -613,67 +1522,73 @@ function getSortIndicator(field) {
         <a href="about.html" class="about-link">About</a>
     </div>
 
-    <!-- filters and crime table section -->
+    <!-- Crime table section -->
 <div class="table-section">
-    <h2>Crime Incidents</h2>
     
-    <!-- filter controls -->
-    <div class="filters">
-        <div class="filter-group">
-            <label>Start Date</label>
-            <input type="date" v-model="filters.start_date" />
+    <!-- Minimal filter bar (Option A) -->
+    <div class="filter-bar">
+        <div class="filter-bar-content">
+            <!-- Results count -->
+            <span class="results-label">{{ filteredIncidents.length }} crimes</span>
+            
+            <!-- Filter dropdowns -->
+            <div class="filter-dropdowns">
+                <div class="filter-dropdown">
+                    <label>Date:</label>
+                    <select v-model="dateFilter" class="filter-select" :class="{ active: dateFilter !== 'all' }">
+                        <option value="all">All</option>
+                        <option value="today">Today</option>
+                        <option value="week">Last 7 days</option>
+                        <option value="month">Last 30 days</option>
+                        <option value="custom">Custom...</option>
+                    </select>
+                </div>
+                
+                <div class="filter-dropdown">
+                    <label>Type:</label>
+                    <select v-model="typeFilter" class="filter-select" :class="{ active: typeFilter !== 'all' }">
+                        <option value="all">All</option>
+                        <option value="violent">Violent</option>
+                        <option value="property">Property</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                
+                <div class="filter-dropdown">
+                    <label>Area:</label>
+                    <select v-model="filters.selected_neighborhood" class="filter-select" :class="{ active: filters.selected_neighborhood !== '' }">
+                        <option value="">All</option>
+                        <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                            {{ n.name }}
+                        </option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- Clear button (only shows when filters active) -->
+            <button 
+                v-if="hasActiveFilters"
+                class="clear-filters-btn"
+                @click="clearAllFilters"
+            >
+                Clear
+            </button>
         </div>
-        <div class="filter-group">
-            <label>End Date</label>
-            <input type="date" v-model="filters.end_date" />
-        </div>
-        <div class="filter-group">
-            <label>Crime Type <button class="clear-btn" @click="filters.selected_codes = []">Clear</button></label>
-            <select v-model="filters.selected_codes" multiple>
-                <option v-for="c in codes" :key="c.code" :value="c.code">
-                    {{ c.type }}
-                </option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Neighborhood</label>
-            <select v-model="filters.selected_neighborhood">
-                <option value="">All Neighborhoods</option>
-                <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
-                    {{ n.name }}
-                </option>
-            </select>
+        
+        <!-- Custom date range (shows when Date: Custom is selected) -->
+        <div v-if="dateFilter === 'custom'" class="custom-date-row">
+            <label>From:</label>
+            <input type="date" v-model="filters.start_date" class="date-input" />
+            <label>To:</label>
+            <input type="date" v-model="filters.end_date" class="date-input" />
         </div>
     </div>
     
-    <!-- results count -->
-    <p class="results-count">Showing {{ filteredIncidents.length }} of {{ incidents.length }} incidents</p>
-    
-    <!-- X4: Table search input -->
-    <div class="table-search-container">
-        <input 
-            v-model="tableSearch" 
-            type="text" 
-            placeholder="Search crimes (case #, date, time, incident, block, neighborhood)..."
-            class="table-search-input"
-        />
-        <button 
-            v-if="tableSearch" 
-            @click="tableSearch = ''"
-            class="table-search-clear"
-            title="Clear search"
-        >
-            ✕
-        </button>
+    <!-- Geocoding status message -->
+    <div v-if="geocodingStatus" class="geocoding-status">
+        {{ geocodingStatus }}
     </div>
     
-    <!-- color legend -->
-<div class="legend">
-    <span class="legend-item"><span class="dot violent"></span> Violent</span>
-    <span class="legend-item"><span class="dot property"></span> Property</span>
-    <span class="legend-item"><span class="dot other"></span> Other</span>
-</div>
-
     <!-- crime table -->
     <div class="table-wrapper">
         <table class="crime-table">
@@ -701,24 +1616,65 @@ function getSortIndicator(field) {
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="inc in filteredIncidents" :key="inc.case_number" :class="getCrimeCategory(inc.code)">
+                <tr v-for="inc in filteredIncidents" :key="inc.case_number" :class="getCrimeCategory(inc.code)" :data-case="inc.case_number">
                     <td>{{ inc.case_number }}</td>
                     <td>{{ inc.date }}</td>
                     <td>{{ inc.time }}</td>
                     <td>{{ inc.incident }}</td>
                     <td>{{ inc.block }}</td>
                     <td>{{ neighborhoods.find(n => n.id === inc.neighborhood_number)?.name || inc.neighborhood_number }}</td>
-                    <td>
-                        <button 
-                            class="marker-btn" 
-                            :class="{ active: crimeMarkers[inc.case_number] }"
-                            @click="toggleCrimeMarker(inc)"
-                            title="Add/remove marker on map"
-                        >
-                            📍
-                        </button>
-                        <button class="delete-btn" @click="deleteIncident(inc.case_number)">🗑️</button>
-                    </td>
+<td>
+                                        <button 
+                                            class="marker-btn" 
+                                            :class="{ 
+                                                active: crimeMarkers[inc.case_number],
+                                                loading: geocodingInProgress[inc.case_number]
+                                            }"
+                                            @click="toggleCrimeMarker(inc)"
+                                            :disabled="geocodingInProgress[inc.case_number]"
+                                            :title="geocodingInProgress[inc.case_number] ? 'Locating...' : (crimeMarkers[inc.case_number] ? 'Remove from map' : 'Show on map')"
+                                        >
+                                            <!-- Circular progress ring during loading -->
+                                            <svg v-if="geocodingInProgress[inc.case_number]" 
+                                                 class="progress-ring" 
+                                                 width="28" height="28" viewBox="0 0 28 28">
+                                                <!-- Grey background ring -->
+                                                <circle 
+                                                    class="progress-ring-bg"
+                                                    cx="14" cy="14" r="11"
+                                                    fill="none"
+                                                    stroke="#d0d0d0"
+                                                    stroke-width="3"
+                                                />
+                                                <!-- Green progress ring -->
+                                                <circle 
+                                                    class="progress-ring-fill"
+                                                    cx="14" cy="14" r="11"
+                                                    fill="none"
+                                                    stroke="#4caf50"
+                                                    stroke-width="3"
+                                                    stroke-linecap="round"
+                                                    :stroke-dasharray="69.1"
+                                                    :stroke-dashoffset="69.1 - (69.1 * (geocodingProgress[inc.case_number] || 0) / 100)"
+                                                    transform="rotate(-90 14 14)"
+                                                />
+                                                <!-- Number in center (no % to keep it centered) -->
+                                                <text x="14" y="15" 
+                                                      class="progress-text"
+                                                      text-anchor="middle" 
+                                                      dominant-baseline="middle"
+                                                      font-size="9" 
+                                                      font-weight="bold"
+                                                      font-family="system-ui, -apple-system, sans-serif"
+                                                      :fill="(geocodingProgress[inc.case_number] || 0) >= 100 ? '#4caf50' : '#555'">
+                                                    {{ Math.round(geocodingProgress[inc.case_number] || 0) }}
+                                                </text>
+                                            </svg>
+                                            <!-- Normal state: pin or checkmark -->
+                                            <span v-else>{{ crimeMarkers[inc.case_number] ? '✓' : '📍' }}</span>
+                                        </button>
+                                        <button class="delete-btn" @click="deleteIncident(inc.case_number)">🗑️</button>
+                                    </td>
                 </tr>
             </tbody>
         </table>
@@ -729,48 +1685,75 @@ function getSortIndicator(field) {
     <!-- new incident form - slides in from right when visible -->
     <div class="incident-form" :class="{ visible: form_visible }">
         <div class="form-header">
-            <h3>Add New Incident</h3>
+            <h3>Report New Incident</h3>
             <button class="close-form" @click="toggleForm">×</button>
         </div>
         
-        <label>Case Number</label>
-        <input v-model="newIncident.case_number" placeholder="24-123456" />
+        <div class="form-section">
+            <div class="form-row">
+                <div class="form-field">
+                    <label>Date</label>
+                    <input v-model="newIncident.date" type="date" />
+                </div>
+                <div class="form-field">
+                    <label>Time</label>
+                    <input v-model="newIncident.time" type="time" />
+                </div>
+            </div>
+            
+            <label>Crime Type <span class="required">*</span></label>
+            <select v-model="newIncident.code" @change="autofillIncidentType">
+                <option value="">-- Select crime type --</option>
+                <option v-for="c in codes" :key="c.code" :value="c.code">
+                    {{ c.type }}
+                </option>
+            </select>
+            
+            <label>Neighborhood <span class="required">*</span></label>
+            <select v-model="newIncident.neighborhood_number" @change="autofillPoliceGrid">
+                <option value="">-- Select neighborhood --</option>
+                <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                    {{ n.name }}
+                </option>
+            </select>
+            
+            <label>Block Address <span class="required">*</span></label>
+            <input v-model="newIncident.block" placeholder="e.g. 7XX UNIVERSITY AVE" />
+            <span class="field-hint">Use XX for privacy (e.g. 12XX MAIN ST)</span>
+            
+            <label>Description</label>
+            <input v-model="newIncident.incident" placeholder="Brief description of incident" />
+        </div>
         
-        <label>Date</label>
-        <input v-model="newIncident.date" type="date" />
+        <div class="form-section form-advanced" v-if="showAdvancedFields">
+            <label>Case Number</label>
+            <input v-model="newIncident.case_number" placeholder="Auto-generated if blank" />
+            
+            <label>Police Grid</label>
+            <input v-model="newIncident.police_grid" type="number" placeholder="Auto-assigned based on neighborhood" />
+        </div>
         
-        <label>Time</label>
-        <input v-model="newIncident.time" type="time" step="1" />
+        <button type="button" class="toggle-advanced" @click="showAdvancedFields = !showAdvancedFields">
+            {{ showAdvancedFields ? '▼ Hide advanced fields' : '▶ Show advanced fields' }}
+        </button>
         
-        <label>Crime Type</label>
-        <select v-model="newIncident.code">
-            <option value="">-- pick one --</option>
-            <option v-for="c in codes" :key="c.code" :value="c.code">
-                {{ c.type }}
-            </option>
-        </select>
-        
-        <label>Incident Description</label>
-        <input v-model="newIncident.incident" placeholder="what happened" />
-        
-        <label>Police Grid</label>
-        <input v-model="newIncident.police_grid" type="number" placeholder="87" />
-        
-        <label>Neighborhood</label>
-        <select v-model="newIncident.neighborhood_number">
-            <option value="">-- pick one --</option>
-            <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
-                {{ n.name }}
-            </option>
-        </select>
-        
-        <label>Block Address</label>
-        <input v-model="newIncident.block" placeholder="1XX MAIN ST" />
-        
-        <button class="button" @click="submitIncident">Submit</button>
+        <button class="button submit-btn" @click="submitIncident">Submit Report</button>
         
         <p v-if="form_error" class="form-error">{{ form_error }}</p>
-        <p v-if="form_success" class="form-success">incident added!</p>
+    </div>
+    
+    <!-- Success popup overlay -->
+    <div class="success-overlay" v-if="successPopup" @click.self="closeSuccessPopup">
+        <div class="success-popup">
+            <div class="success-icon">✓</div>
+            <h2>Incident Reported!</h2>
+            <p class="success-case">Case #{{ lastAddedCase }}</p>
+            <p class="success-message">Your incident has been added to the database and will appear in the Crime Incidents table below.</p>
+            <div class="success-buttons">
+                <button class="btn-jump" @click="jumpToIncident">Jump to Incident</button>
+                <button class="btn-close" @click="closeSuccessPopup">Close</button>
+            </div>
+        </div>
     </div>
 </template>
 
@@ -796,109 +1779,234 @@ function getSortIndicator(field) {
 }
 /* dialog for api url */
 #rest-dialog {
-    width: 20rem;
-    margin-top: 1rem;
+    width: 340px;
+    margin: 0;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
     z-index: 1000;
+    padding: 0;
+    border-radius: 16px;
+    border: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    overflow: hidden;
 }
+
+#rest-dialog::backdrop {
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px);
+}
+
+.dialog-content {
+    background: white;
+    margin: 3px;
+    border-radius: 14px;
+    padding: 1.25rem;
+    text-align: center;
+}
+
 .dialog-header {
-    font-size: 1.2rem;
-    font-weight: bold;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0 0 0.25rem 0;
 }
+
+.dialog-subtitle {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin: 0 0 1rem 0;
+}
+
+.dialog-input-group {
+    text-align: left;
+    margin-bottom: 0.75rem;
+}
+
 .dialog-label {
-    font-size: 1rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #374151;
+    display: block;
+    margin-bottom: 0.25rem;
 }
+
 .dialog-input {
-    font-size: 1rem;
+    font-size: 0.9rem;
     width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
 }
+
+.dialog-input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
 .dialog-error {
-    font-size: 1rem;
-    color: #D32323;
+    font-size: 0.8rem;
+    color: #dc2626;
+    background: #fef2f2;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    margin: 0 0 0.75rem 0;
+    text-align: left;
+}
+
+/* Dialog buttons container */
+.dialog-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.dialog-buttons .button {
+    flex: 1;
+    padding: 0.65rem 0.5rem;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+/* Quick connect button */
+.localhost-btn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    color: white !important;
+}
+
+.localhost-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.localhost-btn:disabled {
+    background: #9ca3af !important;
+    cursor: wait;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Connect button */
+.ok-btn {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.ok-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.dialog-hint {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin: 0.75rem 0 0 0;
 }
 
 /* main layout - full screen with padding */
 .main-layout {
     position: relative;
-    padding: 1rem;
-    height: 60vh;
+    padding: 1rem 1rem 0;
+    height: 55vh;
 }
 
 /* map fills the space */
 #leafletmap {
     width: 100%;
     height: 100%;
-    border-radius: 8px;
+    border-radius: 12px 12px 0 0;
 }
 
-/* C1: Address search container */
+/* C1: Address search container - conservative light theme */
 .search-container {
     position: absolute;
     bottom: 1.5rem;
     left: 1.5rem;
     z-index: 500;
-    background: white;
-    padding: 1rem;
+    background: #f8f9fa;
+    padding: 0.75rem;
     border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    min-width: 300px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    min-width: 320px;
+    border: 1px solid #e5e7eb;
 }
 
 .search-box {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
+    position: relative;
 }
 
 .search-input {
     flex: 1;
-    padding: 0.75rem;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    font-size: 0.95rem;
+    padding: 0.5rem 0.75rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    color: #374151;
+}
+
+.search-input::placeholder {
+    color: #9ca3af;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
 }
 
 .search-button {
-    padding: 0.75rem 1.5rem;
-    background: #3b82f6;
+    padding: 0.5rem 0.9rem;
+    background: #4b5563;
     color: white;
     border: none;
-    border-radius: 4px;
-    font-weight: 600;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 0.85rem;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.15s;
 }
 
 .search-button:hover:not(:disabled) {
-    background: #2563eb;
+    background: #374151;
 }
 
 .search-button:disabled {
-    background: #9ca3af;
+    background: #d1d5db;
+    color: #9ca3af;
     cursor: not-allowed;
 }
 
 .clear-search-button {
-    padding: 0.75rem 0.75rem;
+    padding: 0.5rem 0.6rem;
     background: #ef4444;
     color: white;
     border: none;
-    border-radius: 4px;
-    font-weight: 600;
+    border-radius: 6px;
+    font-weight: 500;
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 0.85rem;
+    line-height: 1;
 }
 
-.clear-search-button:hover:not(:disabled) {
+.clear-search-button:hover {
     background: #dc2626;
 }
 
-.clear-search-button:disabled {
-    background: #d1d5db;
-    cursor: not-allowed;
-}
-
 .search-error {
-    color: #d32323;
-    font-size: 0.85rem;
+    color: #fca5a5;
+    font-size: 0.8rem;
     margin-top: 0.5rem;
     margin-bottom: 0;
 }
@@ -930,13 +2038,13 @@ function getSortIndicator(field) {
     top: 1rem;
     right: -450px; /* hidden off screen */
     width: 400px;
-    height: calc(100vh - 4rem); /* leave room at bottom for leaflet watermark */
+    height: calc(100vh - 4rem);
     background: white;
     padding: 2rem;
     overflow-y: auto;
     box-shadow: -2px 0 10px rgba(0,0,0,0.2);
     transition: right 0.3s ease; /* smooth slide */
-    z-index: 600;
+    z-index: 1500; /* above leaflet controls */
     border-radius: 8px;
 }
 .incident-form.visible {
@@ -971,36 +2079,106 @@ function getSortIndicator(field) {
     color: #333 !important;
 }
 
+/* form sections */
+.form-section {
+    margin-bottom: 0.5rem;
+}
+
+.form-row {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.form-field {
+    flex: 1;
+}
+
+.form-field label {
+    margin-top: 0;
+}
+
 /* form fields */
 .incident-form label {
     display: block;
-    margin-top: 1rem;
-    font-weight: bold;
-    color: #555;
+    margin-top: 0.75rem;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.9rem;
 }
+
+.incident-form label .required {
+    color: #dc2626;
+}
+
 .incident-form input, 
 .incident-form select {
     width: 100%;
-    padding: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+}
+
+.incident-form input:focus,
+.incident-form select:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.field-hint {
+    display: block;
+    font-size: 0.75rem;
+    color: #6b7280;
     margin-top: 0.25rem;
-    border: 1px solid #ccc;
+}
+
+/* advanced fields section */
+.form-advanced {
+    background: #f9fafb;
+    padding: 0.75rem;
+    border-radius: 6px;
+    margin-top: 0.5rem;
+}
+
+.toggle-advanced {
+    width: 100%;
+    background: none;
+    border: none;
+    color: #6b7280;
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 0.5rem;
+    margin-top: 0.5rem;
+    text-align: left;
+}
+
+.toggle-advanced:hover {
+    color: #374151;
+    background: #f3f4f6;
     border-radius: 4px;
 }
 
-/* submit button at bottom with proper spacing */
-.incident-form button {
+/* submit button */
+.submit-btn {
     width: 100%;
-    margin-top: 1.5rem;
+    margin-top: 1rem !important;
     padding: 0.75rem;
-    background: #3b82f6;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
     color: white;
     border: none;
     border-radius: 6px;
     font-weight: 600;
+    font-size: 1rem;
     cursor: pointer;
+    transition: all 0.2s;
 }
-.incident-form button:hover {
-    background: #2563eb;
+
+.submit-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
 }
 
 /* error and success messages */
@@ -1008,55 +2186,398 @@ function getSortIndicator(field) {
     color: #D32323; 
     margin-top: 0.5rem;
 }
-.form-success { 
-    color: #2E7D32;
-    margin-top: 0.5rem;
+
+/* Success popup overlay */
+.success-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease;
 }
 
-/* table section */
-.table-section {
-    padding: 1rem;
-    max-width: 1400px;
-    margin: 0 auto;
-}
-.table-section h2 {
-    margin-bottom: 1rem;
-    color: #333;
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
-/* filter controls */
-.filters {
+.success-popup {
+    background: white;
+    border-radius: 16px;
+    padding: 2rem;
+    text-align: center;
+    max-width: 400px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    animation: popIn 0.3s ease;
+}
+
+@keyframes popIn {
+    from { 
+        transform: scale(0.8);
+        opacity: 0;
+    }
+    to { 
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.success-icon {
+    width: 64px;
+    height: 64px;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    font-size: 2rem;
+    font-weight: bold;
+    border-radius: 50%;
     display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    margin-bottom: 1rem;
-    padding: 1rem;
-    background: #f5f5f5;
-    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
 }
-.filter-group {
-    display: flex;
-    flex-direction: column;
-    min-width: 150px;
+
+.success-popup h2 {
+    color: #1f2937;
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
 }
-.filter-group label {
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-    color: #555;
-}
-.filter-group input,
-.filter-group select {
-    padding: 0.5rem;
-    border: 1px solid #ccc;
+
+.success-case {
+    color: #6b7280;
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+    font-family: monospace;
+    background: #f3f4f6;
+    padding: 0.25rem 0.75rem;
     border-radius: 4px;
-}
-.filter-group select[multiple] {
-    height: 100px;
+    display: inline-block;
 }
 
-.results-count {
-    color: #666;
-    margin-bottom: 0.5rem;
+.success-message {
+    color: #4b5563;
+    font-size: 0.95rem;
+    margin: 0 0 1.5rem;
+    line-height: 1.5;
+}
+
+.success-buttons {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.success-buttons button {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+}
+
+.btn-jump {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.btn-jump:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.btn-close {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.btn-close:hover {
+    background: #e5e7eb;
+}
+
+/* Highlight newly added row */
+.crime-table tbody tr.highlight-row {
+    animation: highlightPulse 0.5s ease infinite alternate;
+    background-color: #4ade80 !important;
+    outline: 4px solid #16a34a;
+    outline-offset: -2px;
+}
+
+.crime-table tbody tr.highlight-row td {
+    font-weight: 700 !important;
+    color: #14532d !important;
+}
+
+@keyframes highlightPulse {
+    from { 
+        background-color: #4ade80;
+        outline-color: #16a34a;
+    }
+    to { 
+        background-color: #22c55e;
+        outline-color: #15803d;
+    }
+}
+
+/* table section - connects directly with map */
+.table-section {
+    padding: 0 1rem 1rem;
+    max-width: 1400px;
+    margin: -1px auto 0;
+}
+
+/* ========== OPTION A: MINIMAL DROPDOWN FILTER BAR ========== */
+.filter-bar {
+    background: #f8f9fa;
+    border-bottom: 1px solid #e5e7eb;
+    border-radius: 8px 8px 0 0;
+}
+
+.filter-bar-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    padding: 0.75rem 1.25rem;
+    flex-wrap: wrap;
+}
+
+/* Results count label */
+.results-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #374151;
+    white-space: nowrap;
+}
+
+/* Filter dropdowns container */
+.filter-dropdowns {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+/* Individual filter dropdown */
+.filter-dropdown {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.filter-dropdown label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+/* Select styling */
+.filter-select {
+    padding: 0.4rem 0.6rem;
+    padding-right: 1.5rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #374151;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.4rem center;
+    background-repeat: no-repeat;
+    background-size: 1em 1em;
+}
+
+.filter-select:hover {
+    border-color: #9ca3af;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+/* Active filter indicator - subtle underline */
+.filter-select.active {
+    border-color: #4b5563;
+    font-weight: 600;
+    color: #111827;
+}
+
+.filter-select option {
+    background: white;
+    color: #374151;
+}
+
+/* Clear button */
+.clear-filters-btn {
+    padding: 0.4rem 0.75rem;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #6b7280;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.clear-filters-btn:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+    color: #374151;
+}
+
+/* Custom date range row */
+.custom-date-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1.25rem 0.75rem;
+    background: #f3f4f6;
+    border-top: 1px solid #e5e7eb;
+}
+
+.custom-date-row label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.date-input {
+    padding: 0.35rem 0.5rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #374151;
+    font-size: 0.85rem;
+}
+
+.date-input:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+/* Smart search dropdown (used in filter bar) */
+.table-search-wrapper .smart-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: 100;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+/* Map search dropdown - dark theme */
+.search-box {
+    position: relative;
+}
+
+.map-search-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.map-search-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    border-bottom: 1px solid #f3f4f6;
+    transition: background 0.15s ease;
+}
+
+.map-search-item:last-child {
+    border-bottom: none;
+}
+
+.map-search-item:hover,
+.map-search-item.selected {
+    background: #f3f4f6;
+}
+
+.map-suggestion-category {
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    margin-right: 0.5rem;
+    white-space: nowrap;
+}
+
+.map-search-item.type-neighborhood .map-suggestion-category {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.map-search-item.type-street .map-suggestion-category {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.map-suggestion-text {
+    font-size: 0.85rem;
+    color: #374151;
+}
+
+.map-suggestion-text :deep(mark) {
+    background: #fef08a;
+    color: #374151;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+/* Geocoding status message - prominent notification */
+.geocoding-status {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 0.75rem 1.25rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 /* X4: Table search input */
@@ -1179,6 +2700,72 @@ function getSortIndicator(field) {
 .dot.violent { background: #ffcdd2; border: 1px solid #e57373; }
 .dot.property { background: #fff9c4; border: 1px solid #ffd54f; }
 .dot.other { background: #e0e0e0; border: 1px solid #bdbdbd; }
+
+/* marker button - show on map */
+.marker-btn {
+    background: #e3f2fd;
+    border: 2px solid #2196f3;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0.3rem;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+.marker-btn:hover:not(:disabled) {
+    background: #bbdefb;
+    transform: scale(1.1);
+}
+.marker-btn:disabled {
+    cursor: wait;
+    opacity: 0.8;
+}
+.marker-btn.active {
+    background: #4caf50;
+    border-color: #388e3c;
+    color: white;
+}
+.marker-btn.active:hover:not(:disabled) {
+    background: #43a047;
+}
+.marker-btn.loading {
+    background: #f1f8e9;
+    border-color: #81c784;
+}
+
+/* Circular progress ring */
+.progress-ring {
+    display: block;
+    flex-shrink: 0;
+}
+
+.progress-ring-bg {
+    opacity: 1;
+}
+
+.progress-ring-fill {
+    transition: stroke-dashoffset 0.1s ease-out;
+}
+
+.progress-text {
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Subtle pulse on the loading button */
+.marker-btn.loading {
+    animation: softPulse 2s ease-in-out infinite;
+}
+
+@keyframes softPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.2); }
+}
+
 /* delete button */
 .delete-btn {
     background: none;
@@ -1190,5 +2777,100 @@ function getSortIndicator(field) {
 }
 .delete-btn:hover {
     background: #ffcdd2;
+}
+
+/* Smart search dropdown */
+.table-search-container {
+    position: relative;
+}
+
+.smart-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 2px solid #3b82f6;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.smart-search-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background 0.15s ease;
+}
+
+.smart-search-item:last-child {
+    border-bottom: none;
+}
+
+.smart-search-item:hover,
+.smart-search-item.selected {
+    background: #f0f7ff;
+}
+
+.smart-search-item.selected {
+    background: #e0efff;
+}
+
+.suggestion-category {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    margin-right: 0.75rem;
+    white-space: nowrap;
+    min-width: 70px;
+    text-align: center;
+}
+
+/* Category colors */
+.smart-search-item.type-case .suggestion-category {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.smart-search-item.type-address .suggestion-category {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.smart-search-item.type-crime .suggestion-category {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.suggestion-text {
+    flex: 1;
+    font-size: 0.95rem;
+    color: #374151;
+}
+
+.suggestion-text :deep(mark) {
+    background: #fef08a;
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+/* Update input styling when dropdown is open */
+.table-search-input:focus {
+    border-color: #3b82f6;
+    outline: none;
+}
+
+.table-search-container:has(.smart-search-dropdown) .table-search-input {
+    border-radius: 8px 8px 0 0;
+    border-color: #3b82f6;
 }
 </style>
