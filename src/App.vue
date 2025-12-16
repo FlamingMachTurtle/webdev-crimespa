@@ -61,7 +61,11 @@ let smartSearchIndex = ref(-1); // currently highlighted suggestion (-1 = none)
 
 // Filter dropdown state (Option A)
 let dateFilter = ref('all');  // 'all', 'today', 'week', 'month', 'custom'
-let typeFilter = ref('all');  // 'all', 'violent', 'property', 'other'
+let timeFilter = ref('all');  // 'all', 'morning', 'afternoon', 'evening', 'night', 'weekdays', 'weekends', 'business'
+let typeFilter = ref('all');  // 'all', 'violent', 'property', 'other' (kept for backwards compat)
+
+// Crime type panel state (Option 3)
+let crimeTypePanelOpen = ref(false);
 
 // Map search autocomplete state
 let mapSearchOpen = ref(false);
@@ -74,8 +78,21 @@ let addressSearch = reactive({
     error: '',
     lat: null,
     lng: null,
-    marker: null  // store reference to search marker so we can remove it
+    marker: null,  // store reference to search marker so we can remove it
+    autoUpdating: false // track if we're auto-updating from map movement
 });
+
+// Manual lat/lng input state
+let manualCoords = reactive({
+    lat: '',
+    lng: '',
+    isEditing: false // track if user is currently editing the fields
+});
+
+// Debounce timer for reverse geocoding
+let reverseGeocodeTimer = null;
+// Track last user search to avoid overwriting user searches
+let lastUserSearch = '';
 
 // B3: neighborhood crime counts
 let neighborhoodCrimeCounts = reactive({});
@@ -139,6 +156,10 @@ onMounted(() => {
         maxZoom: 18
     }).addTo(map.leaflet);
     map.leaflet.setMaxBounds([[44.883658, -93.217977], [45.008206, -92.993787]]);
+    
+    // Initialize manual coordinate inputs with map center
+    manualCoords.lat = map.center.lat.toFixed(6);
+    manualCoords.lng = map.center.lng.toFixed(6);
 
     // Update when map is panned/zoomed (core requirement)
     map.leaflet.on('moveend', () => {
@@ -147,8 +168,18 @@ onMounted(() => {
         map.center.lng = center.lng;
         // Store current center address for display (but don't overwrite if user is typing)
         map.center.address = `${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}`;
+        
+        // Update manual coordinate inputs (only if user isn't editing them)
+        if (!manualCoords.isEditing) {
+            manualCoords.lat = center.lat.toFixed(6);
+            manualCoords.lng = center.lng.toFixed(6);
+        }
+        
         // Update visible neighborhoods based on map bounds
         updateVisibleNeighborhoods();
+        
+        // Debounced reverse geocoding to update search bar (prevent API overload)
+        updateSearchFromMapPosition();
     });
 
     // Get boundaries for St. Paul neighborhoods
@@ -294,11 +325,19 @@ async function searchAddress() {
     addressSearch.error = '';
     addressSearch.lat = null;
     addressSearch.lng = null;
+    
+    // Track this as a user-initiated search
+    lastUserSearch = addressSearch.query;
 
     try {
         // C2: Use Nominatim API to geocode address
         const response = await fetch(
-            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addressSearch.query)}&format=json&limit=1`
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addressSearch.query)}&format=json&limit=1`,
+            {
+                headers: {
+                    'User-Agent': 'StPaulCrimeSPA/1.0'
+                }
+            }
         );
         
         if (!response.ok) {
@@ -410,6 +449,137 @@ function clearSearch() {
     addressSearch.error = '';
     addressSearch.lat = null;
     addressSearch.lng = null;
+    lastUserSearch = '';
+    
+    // Trigger an immediate reverse geocode to fill in current location
+    setTimeout(() => {
+        updateSearchFromMapPosition();
+    }, 100);
+}
+
+// Debounced reverse geocoding - updates search bar as map moves (throttled to prevent API overload)
+function updateSearchFromMapPosition() {
+    // Clear any pending reverse geocode requests
+    if (reverseGeocodeTimer) {
+        clearTimeout(reverseGeocodeTimer);
+    }
+    
+    // Wait 2.5 seconds after user stops moving the map before making API call
+    reverseGeocodeTimer = setTimeout(async () => {
+        if (!map.leaflet) return;
+        
+        // Don't override if user has typed something recently
+        if (addressSearch.searching || addressSearch.marker) {
+            console.log('Skipping reverse geocode - user has active search');
+            return;
+        }
+        
+        const center = map.leaflet.getCenter();
+        
+        try {
+            addressSearch.autoUpdating = true;
+            
+            // Reverse geocode the center position with proper headers
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?lat=${center.lat}&lon=${center.lng}&format=json&zoom=16`,
+                {
+                    headers: {
+                        'User-Agent': 'StPaulCrimeSPA/1.0'
+                    }
+                }
+            );
+            
+            if (response.ok) {
+                const result = await response.json();
+                
+                // Build a concise address string
+                let displayAddress = '';
+                
+                if (result.address) {
+                    // Try to build a short, useful address
+                    const addr = result.address;
+                    const parts = [];
+                    
+                    if (addr.road) {
+                        parts.push(addr.road);
+                    } else if (addr.neighbourhood) {
+                        parts.push(addr.neighbourhood);
+                    }
+                    
+                    if (addr.suburb && addr.suburb !== addr.neighbourhood) {
+                        parts.push(addr.suburb);
+                    }
+                    
+                    displayAddress = parts.join(', ');
+                    
+                    // Fallback to full display name if we couldn't build a good address
+                    if (!displayAddress) {
+                        displayAddress = result.display_name.split(',').slice(0, 2).join(',');
+                    }
+                } else {
+                    displayAddress = result.display_name || `${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}`;
+                }
+                
+                // Only update if query is empty or hasn't been modified by user
+                if (!addressSearch.query || addressSearch.query === lastUserSearch) {
+                    addressSearch.query = displayAddress;
+                    console.log('Reverse geocoded:', displayAddress);
+                }
+            }
+        } catch (error) {
+            console.log('Reverse geocoding failed:', error);
+            // Silently fail - this is a convenience feature
+        } finally {
+            addressSearch.autoUpdating = false;
+        }
+    }, 2500); // 2.5 second debounce to reduce API calls
+}
+
+// Handle manual latitude/longitude input
+function updateMapFromCoords() {
+    const lat = parseFloat(manualCoords.lat);
+    const lng = parseFloat(manualCoords.lng);
+    
+    // Validate coordinates
+    if (isNaN(lat) || isNaN(lng)) {
+        addressSearch.error = 'Invalid coordinates';
+        return;
+    }
+    
+    if (lat < -90 || lat > 90) {
+        addressSearch.error = 'Latitude must be between -90 and 90';
+        return;
+    }
+    
+    if (lng < -180 || lng > 180) {
+        addressSearch.error = 'Longitude must be between -180 and 180';
+        return;
+    }
+    
+    addressSearch.error = '';
+    
+    // Update map center
+    map.leaflet.setView([lat, lng], map.leaflet.getZoom());
+    
+    // Add a marker at the specified location
+    if (addressSearch.marker) {
+        map.leaflet.removeLayer(addressSearch.marker);
+    }
+    
+    addressSearch.marker = L.marker([lat, lng], {
+        title: `${lat}, ${lng}`
+    }).bindPopup(`<b>Manual Location</b><br/>${lat.toFixed(6)}, ${lng.toFixed(6)}`)
+     .openPopup()
+     .addTo(map.leaflet);
+}
+
+// Handle when user starts/stops editing coordinate fields
+function handleCoordFocus() {
+    manualCoords.isEditing = true;
+}
+
+function handleCoordBlur() {
+    manualCoords.isEditing = false;
 }
 
 // submit new incident to api
@@ -646,6 +816,46 @@ async function useLocalhost() {
     }
 }
 
+// Helper: check if a time falls within a period
+function isTimeInPeriod(timeStr, period) {
+    if (!timeStr) return true; // No time data, include it
+    
+    // Parse HH:MM:SS or HH:MM format
+    const timeParts = timeStr.split(':');
+    const hour = parseInt(timeParts[0]);
+    
+    switch(period) {
+        case 'morning':
+            return hour >= 6 && hour < 12;
+        case 'afternoon':
+            return hour >= 12 && hour < 18;
+        case 'evening':
+            return hour >= 18 && hour < 22;
+        case 'night':
+            return hour >= 22 || hour < 6;
+        case 'business':
+            return hour >= 9 && hour < 17;
+        default:
+            return true;
+    }
+}
+
+// Helper: check if a date is a weekend or weekday
+function isDayType(dateStr, type) {
+    if (!dateStr) return true;
+    
+    const date = new Date(dateStr);
+    const dayOfWeek = date.getDay(); // 0 = Sunday, 6 = Saturday
+    
+    if (type === 'weekends') {
+        return dayOfWeek === 0 || dayOfWeek === 6;
+    } else if (type === 'weekdays') {
+        return dayOfWeek >= 1 && dayOfWeek <= 5;
+    }
+    
+    return true;
+}
+
 // computed property - filters incidents based on current filter selections
 const filteredIncidents = computed(() => {
     // Helper: get date string for comparisons
@@ -658,7 +868,8 @@ const filteredIncidents = computed(() => {
     let filtered = incidents.value.filter(inc => {
         // Core requirement: filter by visible map area
         if (filters.limit_to_visible && visibleNeighborhoods.value.length > 0) {
-            if (!visibleNeighborhoods.value.includes(inc.neighborhood_number)) return false;
+            // Use Number() to ensure consistent comparison (API may return string)
+            if (!visibleNeighborhoods.value.includes(Number(inc.neighborhood_number))) return false;
         }
         
         // Date filter dropdown (new Option A style)
@@ -674,10 +885,18 @@ const filteredIncidents = computed(() => {
             if (filters.end_date && inc.date > filters.end_date) return false;
         }
         
-        // Type filter dropdown (new Option A style)
-        if (typeFilter.value !== 'all') {
-            const category = getCrimeCategory(inc.code);
-            if (typeFilter.value !== category) return false;
+        // Time filter (morning, afternoon, evening, night, weekdays, weekends, business hours)
+        if (timeFilter.value !== 'all') {
+            if (timeFilter.value === 'weekdays' || timeFilter.value === 'weekends') {
+                if (!isDayType(inc.date, timeFilter.value)) return false;
+            } else {
+                if (!isTimeInPeriod(inc.time, timeFilter.value)) return false;
+            }
+        }
+        
+        // Crime type filter (Option 3: specific codes or categories)
+        if (filters.selected_codes.length > 0) {
+            if (!filters.selected_codes.includes(inc.code)) return false;
         }
         
         // Neighborhood filter
@@ -872,9 +1091,23 @@ const activeFilters = computed(() => {
 // Check if any filters are active (for showing Clear button)
 const hasActiveFilters = computed(() => {
     return dateFilter.value !== 'all' || 
-           typeFilter.value !== 'all' || 
+           timeFilter.value !== 'all' ||
+           filters.selected_codes.length > 0 ||
            filters.selected_neighborhood !== '' ||
            tableSearch.value.trim() !== '';
+});
+
+// Computed: crime types by category
+const violentCrimes = computed(() => {
+    return codes.value.filter(c => getCrimeCategory(c.code) === 'violent');
+});
+
+const propertyCrimes = computed(() => {
+    return codes.value.filter(c => getCrimeCategory(c.code) === 'property');
+});
+
+const otherCrimes = computed(() => {
+    return codes.value.filter(c => getCrimeCategory(c.code) === 'other');
 });
 
 // Map search: generate suggestions from neighborhoods and common addresses
@@ -1306,25 +1539,27 @@ function jumpToIncidentByCase(caseNum) {
 
 // Filter panel: clear all filters
 function clearAllFilters() {
-    // Reset Option A dropdowns
+    // Reset dropdowns
     dateFilter.value = 'all';
-    typeFilter.value = 'all';
+    timeFilter.value = 'all';
     filters.selected_neighborhood = '';
+    // Clear crime type selections
+    filters.selected_codes = [];
     // Reset custom date range
     filters.start_date = '';
     filters.end_date = '';
     // Clear search
     tableSearch.value = '';
+    // Close panel
+    crimeTypePanelOpen.value = false;
 }
 
-// Filter panel: toggle quick category filter (Violent/Property/Other)
-function toggleCategoryFilter(category) {
-    // Get all codes in this category
+// Toggle entire category (for quick buttons)
+function toggleCategory(category) {
     const categoryCodes = codes.value
         .filter(c => getCrimeCategory(c.code) === category)
         .map(c => c.code);
     
-    // Check if all codes in this category are already selected
     const allSelected = categoryCodes.every(code => filters.selected_codes.includes(code));
     
     if (allSelected) {
@@ -1332,17 +1567,58 @@ function toggleCategoryFilter(category) {
         filters.selected_codes = filters.selected_codes.filter(code => !categoryCodes.includes(code));
     } else {
         // Add all codes in this category (without duplicates)
-        const newCodes = [...new Set([...filters.selected_codes, ...categoryCodes])];
-        filters.selected_codes = newCodes;
+        filters.selected_codes = [...new Set([...filters.selected_codes, ...categoryCodes])];
     }
 }
 
-// Check if a category filter is active
+// Check if a category is fully active (all types selected)
 function isCategoryActive(category) {
     const categoryCodes = codes.value
         .filter(c => getCrimeCategory(c.code) === category)
         .map(c => c.code);
     return categoryCodes.length > 0 && categoryCodes.every(code => filters.selected_codes.includes(code));
+}
+
+// Check if category is fully selected (for panel checkbox)
+function isCategoryFullySelected(category) {
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    return categoryCodes.length > 0 && categoryCodes.every(code => filters.selected_codes.includes(code));
+}
+
+// Check if category is partially selected (for indeterminate state)
+function isCategoryPartiallySelected(category) {
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    const selectedCount = categoryCodes.filter(code => filters.selected_codes.includes(code)).length;
+    return selectedCount > 0 && selectedCount < categoryCodes.length;
+}
+
+// Toggle all types in a category (from panel header checkbox)
+function toggleCategoryAll(category) {
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    
+    const allSelected = categoryCodes.every(code => filters.selected_codes.includes(code));
+    
+    if (allSelected) {
+        filters.selected_codes = filters.selected_codes.filter(code => !categoryCodes.includes(code));
+    } else {
+        filters.selected_codes = [...new Set([...filters.selected_codes, ...categoryCodes])];
+    }
+}
+
+// Select all crime types
+function selectAllCrimeTypes() {
+    filters.selected_codes = codes.value.map(c => c.code);
+}
+
+// Clear all crime type selections
+function clearCrimeTypes() {
+    filters.selected_codes = [];
 }
 
 // Map search: handle blur to close dropdown
@@ -1396,6 +1672,9 @@ function handleMapSearchKeydown(event) {
 function selectMapSuggestion(suggestion) {
     mapSearchOpen.value = false;
     mapSearchIndex.value = -1;
+    
+    // Track as user search
+    lastUserSearch = suggestion.display;
     
     if (suggestion.type === 'neighborhood') {
         // Pan to neighborhood center and filter by neighborhood
@@ -1462,23 +1741,62 @@ function getMapCategoryLabel(type) {
     <div class="main-layout">
         <div id="leafletmap"></div>
         
-        <!-- C1: Address search with autocomplete -->
+        <!-- C1: Coordinate inputs and Address search with autocomplete -->
         <div class="search-container">
+            <!-- Coordinate input fields -->
+            <div class="coord-inputs">
+                <div class="coord-field">
+                    <label class="coord-label">Latitude</label>
+                    <input 
+                        v-model="manualCoords.lat" 
+                        type="number" 
+                        step="0.000001"
+                        class="coord-input"
+                        @focus="handleCoordFocus"
+                        @blur="handleCoordBlur"
+                        @keydown.enter="updateMapFromCoords"
+                        placeholder="44.955139"
+                    />
+                </div>
+                <div class="coord-field">
+                    <label class="coord-label">Longitude</label>
+                    <input 
+                        v-model="manualCoords.lng" 
+                        type="number" 
+                        step="0.000001"
+                        class="coord-input"
+                        @focus="handleCoordFocus"
+                        @blur="handleCoordBlur"
+                        @keydown.enter="updateMapFromCoords"
+                        placeholder="-93.102222"
+                    />
+                </div>
+                <button 
+                    class="coord-go-button" 
+                    @click="updateMapFromCoords"
+                    title="Go to coordinates"
+                >
+                    Go
+                </button>
+            </div>
+            
+            <!-- Address search box -->
             <div class="search-box">
                 <input 
                     v-model="addressSearch.query" 
                     type="text" 
-                    placeholder="Search address, street, or neighborhood..."
-                    @focus="mapSearchOpen = true"
+                    :placeholder="addressSearch.autoUpdating ? 'Updating location...' : 'Auto-updates as map moves, or search manually...'"
+                    @input="mapSearchOpen = addressSearch.query.length >= 2"
+                    @focus="mapSearchOpen = addressSearch.query.length >= 2"
                     @blur="handleMapSearchBlur"
                     @keydown="handleMapSearchKeydown"
-                    class="search-input"
+                    :class="['search-input', { 'auto-updating': addressSearch.autoUpdating }]"
                     autocomplete="off"
                 />
                 <button 
                     class="search-button" 
                     @click="searchAddress"
-                    :disabled="addressSearch.searching"
+                    :disabled="addressSearch.searching || addressSearch.autoUpdating"
                 >
                     {{ addressSearch.searching ? '...' : 'Go' }}
                 </button>
@@ -1525,54 +1843,157 @@ function getMapCategoryLabel(type) {
     <!-- Crime table section -->
 <div class="table-section">
     
-    <!-- Minimal filter bar (Option A) -->
+    <!-- Redesigned filter bar with better organization -->
     <div class="filter-bar">
-        <div class="filter-bar-content">
-            <!-- Results count -->
-            <span class="results-label">{{ filteredIncidents.length }} crimes</span>
+        <!-- Top row: Results and clear button -->
+        <div class="filter-bar-header">
+            <div class="results-badge">
+                <span class="results-count">{{ filteredIncidents.length }}</span>
+                <span class="results-text">incidents</span>
+            </div>
             
-            <!-- Filter dropdowns -->
-            <div class="filter-dropdowns">
-                <div class="filter-dropdown">
-                    <label>Date:</label>
-                    <select v-model="dateFilter" class="filter-select" :class="{ active: dateFilter !== 'all' }">
-                        <option value="all">All</option>
-                        <option value="today">Today</option>
-                        <option value="week">Last 7 days</option>
-                        <option value="month">Last 30 days</option>
-                        <option value="custom">Custom...</option>
-                    </select>
+            <button 
+                v-if="hasActiveFilters"
+                class="clear-all-btn"
+                @click="clearAllFilters"
+                title="Clear all filters"
+            >
+                <span>✕</span> Clear All
+            </button>
+        </div>
+        
+        <!-- Filter controls grid -->
+        <div class="filter-controls-grid">
+            <!-- Date filter -->
+            <div class="filter-group">
+                <label class="filter-label">Date</label>
+                <select v-model="dateFilter" class="filter-select" :class="{ active: dateFilter !== 'all' }">
+                    <option value="all">All dates</option>
+                    <option value="today">Today</option>
+                    <option value="week">Last 7 days</option>
+                    <option value="month">Last 30 days</option>
+                    <option value="custom">Custom range...</option>
+                </select>
+            </div>
+            
+            <!-- Time filter (NEW) -->
+            <div class="filter-group">
+                <label class="filter-label">Time</label>
+                <select v-model="timeFilter" class="filter-select" :class="{ active: timeFilter !== 'all' }">
+                    <option value="all">All times</option>
+                    <optgroup label="Time of Day">
+                        <option value="morning">Morning (6am-12pm)</option>
+                        <option value="afternoon">Afternoon (12pm-6pm)</option>
+                        <option value="evening">Evening (6pm-10pm)</option>
+                        <option value="night">Night (10pm-6am)</option>
+                    </optgroup>
+                    <optgroup label="Schedule">
+                        <option value="business">Business Hours (9am-5pm)</option>
+                        <option value="weekdays">Weekdays</option>
+                        <option value="weekends">Weekends</option>
+                    </optgroup>
+                </select>
+            </div>
+            
+            <!-- Type button (opens panel) -->
+            <div class="filter-group">
+                <label class="filter-label">Type</label>
+                <button 
+                    class="filter-select type-btn"
+                    :class="{ active: filters.selected_codes.length > 0 || crimeTypePanelOpen }"
+                    @click="crimeTypePanelOpen = !crimeTypePanelOpen"
+                >
+                    <span class="type-btn-text">{{ filters.selected_codes.length > 0 ? `${filters.selected_codes.length} selected` : 'All types' }}</span>
+                    <span class="dropdown-arrow">{{ crimeTypePanelOpen ? '▲' : '▼' }}</span>
+                </button>
+            </div>
+            
+            <!-- Area dropdown -->
+            <div class="filter-group">
+                <label class="filter-label">Area</label>
+                <select v-model="filters.selected_neighborhood" class="filter-select" :class="{ active: filters.selected_neighborhood !== '' }">
+                    <option value="">All neighborhoods</option>
+                    <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                        {{ n.name }}
+                    </option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- Expandable crime type panel -->
+        <div v-if="crimeTypePanelOpen" class="crime-type-panel">
+            <div class="crime-type-columns">
+                <!-- Violent crimes column -->
+                <div class="crime-column">
+                    <div class="column-header violent">
+                        <input 
+                            type="checkbox" 
+                            :checked="isCategoryFullySelected('violent')"
+                            :indeterminate.prop="isCategoryPartiallySelected('violent')"
+                            @change="toggleCategoryAll('violent')"
+                        />
+                        <span>Violent</span>
+                    </div>
+                    <label v-for="c in violentCrimes" :key="c.code" class="crime-checkbox">
+                        <input 
+                            type="checkbox" 
+                            :value="c.code" 
+                            v-model="filters.selected_codes"
+                        />
+                        <span>{{ c.type }}</span>
+                    </label>
                 </div>
                 
-                <div class="filter-dropdown">
-                    <label>Type:</label>
-                    <select v-model="typeFilter" class="filter-select" :class="{ active: typeFilter !== 'all' }">
-                        <option value="all">All</option>
-                        <option value="violent">Violent</option>
-                        <option value="property">Property</option>
-                        <option value="other">Other</option>
-                    </select>
+                <!-- Property crimes column -->
+                <div class="crime-column">
+                    <div class="column-header property">
+                        <input 
+                            type="checkbox" 
+                            :checked="isCategoryFullySelected('property')"
+                            :indeterminate.prop="isCategoryPartiallySelected('property')"
+                            @change="toggleCategoryAll('property')"
+                        />
+                        <span>Property</span>
+                    </div>
+                    <label v-for="c in propertyCrimes" :key="c.code" class="crime-checkbox">
+                        <input 
+                            type="checkbox" 
+                            :value="c.code" 
+                            v-model="filters.selected_codes"
+                        />
+                        <span>{{ c.type }}</span>
+                    </label>
                 </div>
                 
-                <div class="filter-dropdown">
-                    <label>Area:</label>
-                    <select v-model="filters.selected_neighborhood" class="filter-select" :class="{ active: filters.selected_neighborhood !== '' }">
-                        <option value="">All</option>
-                        <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
-                            {{ n.name }}
-                        </option>
-                    </select>
+                <!-- Other crimes column -->
+                <div class="crime-column">
+                    <div class="column-header other">
+                        <input 
+                            type="checkbox" 
+                            :checked="isCategoryFullySelected('other')"
+                            :indeterminate.prop="isCategoryPartiallySelected('other')"
+                            @change="toggleCategoryAll('other')"
+                        />
+                        <span>Other</span>
+                    </div>
+                    <label v-for="c in otherCrimes" :key="c.code" class="crime-checkbox">
+                        <input 
+                            type="checkbox" 
+                            :value="c.code" 
+                            v-model="filters.selected_codes"
+                        />
+                        <span>{{ c.type }}</span>
+                    </label>
                 </div>
             </div>
             
-            <!-- Clear button (only shows when filters active) -->
-            <button 
-                v-if="hasActiveFilters"
-                class="clear-filters-btn"
-                @click="clearAllFilters"
-            >
-                Clear
-            </button>
+            <!-- Panel actions -->
+            <div class="panel-actions">
+                <span class="selection-count">{{ filters.selected_codes.length }} types selected</span>
+                <button class="panel-btn" @click="selectAllCrimeTypes">Select All</button>
+                <button class="panel-btn" @click="clearCrimeTypes">Clear</button>
+                <button class="panel-btn primary" @click="crimeTypePanelOpen = false">Done</button>
+            </div>
         </div>
         
         <!-- Custom date range (shows when Date: Custom is selected) -->
@@ -1934,8 +2355,71 @@ function getMapCategoryLabel(type) {
     padding: 0.75rem;
     border-radius: 8px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-    min-width: 320px;
+    min-width: 380px;
     border: 1px solid #e5e7eb;
+}
+
+/* Coordinate inputs */
+.coord-inputs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    align-items: flex-end;
+}
+
+.coord-field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.coord-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.coord-input {
+    padding: 0.5rem 0.6rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    color: #374151;
+    font-family: 'Courier New', monospace;
+    transition: border-color 0.15s;
+}
+
+.coord-input:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+.coord-input::placeholder {
+    color: #9ca3af;
+    font-family: 'Courier New', monospace;
+}
+
+.coord-go-button {
+    padding: 0.5rem 0.9rem;
+    background: #10b981;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+    height: fit-content;
+}
+
+.coord-go-button:hover {
+    background: #059669;
 }
 
 .search-box {
@@ -1953,16 +2437,35 @@ function getMapCategoryLabel(type) {
     border-radius: 6px;
     font-size: 0.9rem;
     color: #374151;
+    transition: all 0.3s ease;
 }
 
 .search-input::placeholder {
     color: #9ca3af;
+    font-size: 0.85rem;
 }
 
 .search-input:focus {
     outline: none;
     border-color: #6b7280;
     box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+.search-input.auto-updating {
+    border-color: #10b981;
+    background: #f0fdf4;
+    animation: pulseGreen 2s ease-in-out infinite;
+}
+
+@keyframes pulseGreen {
+    0%, 100% {
+        border-color: #10b981;
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+    }
+    50% {
+        border-color: #059669;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+    }
 }
 
 .search-button {
@@ -2333,140 +2836,371 @@ function getMapCategoryLabel(type) {
     margin: -1px auto 0;
 }
 
-/* ========== OPTION A: MINIMAL DROPDOWN FILTER BAR ========== */
+/* ========== REDESIGNED FILTER BAR ========== */
 .filter-bar {
-    background: #f8f9fa;
-    border-bottom: 1px solid #e5e7eb;
-    border-radius: 8px 8px 0 0;
+    background: linear-gradient(to bottom, #ffffff 0%, #f9fafb 100%);
+    border: 1px solid #e5e7eb;
+    border-radius: 12px 12px 0 0;
+    padding: 1.25rem 1.5rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
-.filter-bar-content {
+/* Top header with results and clear button */
+.filter-bar-header {
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    justify-content: center;
-    gap: 1.5rem;
-    padding: 0.75rem 1.25rem;
-    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid #e5e7eb;
 }
 
-/* Results count label */
-.results-label {
+/* Results badge */
+.results-badge {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.results-count {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: white;
+    line-height: 1;
+}
+
+.results-text {
     font-size: 0.9rem;
     font-weight: 600;
-    color: #374151;
-    white-space: nowrap;
+    color: rgba(255, 255, 255, 0.9);
+    text-transform: lowercase;
 }
 
-/* Filter dropdowns container */
-.filter-dropdowns {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-}
-
-/* Individual filter dropdown */
-.filter-dropdown {
+/* Clear all button */
+.clear-all-btn {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-}
-
-.filter-dropdown label {
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: #6b7280;
-}
-
-/* Select styling */
-.filter-select {
-    padding: 0.4rem 0.6rem;
-    padding-right: 1.5rem;
+    padding: 0.5rem 1rem;
     background: white;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    color: #374151;
+    border: 2px solid #ef4444;
+    border-radius: 8px;
+    color: #ef4444;
     font-size: 0.85rem;
+    font-weight: 600;
     cursor: pointer;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition: all 0.2s ease;
+}
+
+.clear-all-btn:hover {
+    background: #ef4444;
+    color: white;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.clear-all-btn span:first-child {
+    font-size: 1rem;
+    font-weight: bold;
+}
+
+/* Filter controls grid */
+.filter-controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    align-items: start;
+}
+
+/* Individual filter group */
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+/* Filter labels */
+.filter-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Select styling - cleaner and more modern */
+.filter-select {
+    width: 100%;
+    padding: 0.65rem 0.85rem;
+    padding-right: 2rem;
+    background: white;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    color: #374151;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
     appearance: none;
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
-    background-position: right 0.4rem center;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.65rem center;
     background-repeat: no-repeat;
-    background-size: 1em 1em;
+    background-size: 1.2em 1.2em;
 }
 
 .filter-select:hover {
-    border-color: #9ca3af;
+    border-color: #d1d5db;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .filter-select:focus {
     outline: none;
-    border-color: #6b7280;
-    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-/* Active filter indicator - subtle underline */
+/* Active filter indicator */
 .filter-select.active {
-    border-color: #4b5563;
+    border-color: #3b82f6;
+    background-color: #eff6ff;
     font-weight: 600;
-    color: #111827;
+    color: #1e40af;
 }
 
 .filter-select option {
     background: white;
     color: #374151;
+    padding: 0.5rem;
 }
 
-/* Clear button */
-.clear-filters-btn {
-    padding: 0.4rem 0.75rem;
-    background: transparent;
+.filter-select optgroup {
+    font-weight: 700;
+    color: #6b7280;
+    font-size: 0.8rem;
+}
+
+/* ========== TYPE BUTTON AND PANEL ========== */
+
+/* Type button (looks like a dropdown) */
+.type-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    text-align: left;
+}
+
+.type-btn-text {
+    flex: 1;
+}
+
+.type-btn .dropdown-arrow {
+    font-size: 0.75rem;
+    color: #6b7280;
+    transition: transform 0.2s ease;
+}
+
+.type-btn.active .dropdown-arrow {
+    color: #1e40af;
+}
+
+/* Crime type panel */
+.crime-type-panel {
+    background: #f9fafb;
+    border-top: 2px solid #e5e7eb;
+    padding: 1.25rem 1.5rem 1rem;
+    margin-top: 1rem;
+    border-radius: 0 0 8px 8px;
+    animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.crime-type-columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2rem;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 0.5rem 0;
+}
+
+.crime-column {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.column-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 2px solid #e5e7eb;
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: #374151;
+    background: #f9fafb;
+    border-radius: 4px 4px 0 0;
+}
+
+.column-header.violent {
+    border-bottom-color: #fca5a5;
+    color: #dc2626;
+    background: #fef2f2;
+}
+
+.column-header.property {
+    border-bottom-color: #fcd34d;
+    color: #d97706;
+    background: #fefce8;
+}
+
+.column-header.other {
+    border-bottom-color: #d1d5db;
+    color: #4b5563;
+    background: #f9fafb;
+}
+
+.column-header input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    accent-color: #4b5563;
+    cursor: pointer;
+}
+
+.crime-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.775rem;
+    color: #4b5563;
+    border-radius: 4px;
+    transition: background 0.1s ease;
+}
+
+.crime-checkbox:hover {
+    background: #f3f4f6;
+}
+
+.crime-checkbox input[type="checkbox"] {
+    width: 13px;
+    height: 13px;
+    accent-color: #4b5563;
+    cursor: pointer;
+}
+
+.crime-checkbox span {
+    flex: 1;
+    line-height: 1.3;
+}
+
+/* Panel actions */
+.panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.75rem 0 0.5rem;
+    margin-top: 0.75rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.selection-count {
+    font-size: 0.775rem;
+    color: #6b7280;
+    margin-right: auto;
+    font-weight: 500;
+}
+
+.panel-btn {
+    padding: 0.35rem 0.7rem;
+    background: white;
     border: 1px solid #d1d5db;
     border-radius: 6px;
     color: #6b7280;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.12s ease;
 }
 
-.clear-filters-btn:hover {
-    background: #f3f4f6;
+.panel-btn:hover {
+    background: #f9fafb;
     border-color: #9ca3af;
-    color: #374151;
+    color: #4b5563;
+}
+
+.panel-btn.primary {
+    background: #4b5563;
+    border-color: #4b5563;
+    color: white;
+}
+
+.panel-btn.primary:hover {
+    background: #374151;
+    border-color: #374151;
 }
 
 /* Custom date range row */
 .custom-date-row {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    padding: 0.5rem 1.25rem 0.75rem;
-    background: #f3f4f6;
-    border-top: 1px solid #e5e7eb;
+    justify-content: flex-start;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background: #eff6ff;
+    border: 2px solid #3b82f6;
+    border-radius: 8px;
+    margin-top: 1rem;
+    animation: slideDown 0.2s ease-out;
 }
 
 .custom-date-row label {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: #6b7280;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #1e40af;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .date-input {
-    padding: 0.35rem 0.5rem;
+    padding: 0.5rem 0.75rem;
     background: white;
-    border: 1px solid #d1d5db;
+    border: 2px solid #e5e7eb;
     border-radius: 6px;
     color: #374151;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.date-input:hover {
+    border-color: #d1d5db;
 }
 
 .date-input:focus {
     outline: none;
-    border-color: #6b7280;
-    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 /* Smart search dropdown (used in filter bar) */
@@ -2498,14 +3232,15 @@ function getMapCategoryLabel(type) {
     border-radius: 6px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
     z-index: 100;
-    max-height: 200px;
+    max-height: 250px;
     overflow-y: auto;
 }
 
 .map-search-item {
     display: flex;
     align-items: center;
-    padding: 0.5rem 0.75rem;
+    gap: 0.75rem;
+    padding: 0.65rem 0.875rem;
     cursor: pointer;
     border-bottom: 1px solid #f3f4f6;
     transition: background 0.15s ease;
@@ -2521,14 +3256,16 @@ function getMapCategoryLabel(type) {
 }
 
 .map-suggestion-category {
-    font-size: 0.6rem;
+    font-size: 0.65rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    padding: 0.15rem 0.4rem;
+    padding: 0.25rem 0.5rem;
     border-radius: 4px;
-    margin-right: 0.5rem;
     white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 95px;
+    text-align: center;
 }
 
 .map-search-item.type-neighborhood .map-suggestion-category {
@@ -2542,8 +3279,10 @@ function getMapCategoryLabel(type) {
 }
 
 .map-suggestion-text {
-    font-size: 0.85rem;
+    flex: 1;
+    font-size: 0.875rem;
     color: #374151;
+    line-height: 1.4;
 }
 
 .map-suggestion-text :deep(mark) {
@@ -2551,6 +3290,7 @@ function getMapCategoryLabel(type) {
     color: #374151;
     padding: 0 2px;
     border-radius: 2px;
+    font-weight: 600;
 }
 
 /* Geocoding status message - prominent notification */
