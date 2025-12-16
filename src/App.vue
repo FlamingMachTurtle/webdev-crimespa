@@ -55,6 +55,18 @@ let tableSort = reactive({
 // X4: Table search state
 let tableSearch = ref('');
 
+// Smart search state
+let smartSearchOpen = ref(false);
+let smartSearchIndex = ref(-1); // currently highlighted suggestion (-1 = none)
+
+// Filter dropdown state (Option A)
+let dateFilter = ref('all');  // 'all', 'today', 'week', 'month', 'custom'
+let typeFilter = ref('all');  // 'all', 'violent', 'property', 'other'
+
+// Map search autocomplete state
+let mapSearchOpen = ref(false);
+let mapSearchIndex = ref(-1);
+
 // C1 + C2 + C3: address search state
 let addressSearch = reactive({
     query: '',
@@ -319,12 +331,73 @@ async function searchAddress() {
          .openPopup()
          .addTo(map.leaflet);
 
+        // Extract street name from query for table filtering
+        // e.g., "123 University Ave, St Paul" -> "UNIVERSITY"
+        const streetMatch = extractStreetName(addressSearch.query);
+        
+        if (streetMatch) {
+            // Filter the crime table to show incidents on this street
+            tableSearch.value = streetMatch;
+            
+            // Scroll to the table section after a brief delay (let map animate first)
+            setTimeout(() => {
+                const tableSection = document.querySelector('.table-section');
+                if (tableSection) {
+                    tableSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 800);
+        }
+
     } catch (error) {
         console.error('Search error:', error);
         addressSearch.error = 'Failed to geocode address: ' + error.message;
     } finally {
         addressSearch.searching = false;
     }
+}
+
+// Extract street name from a full address for table filtering
+// e.g., "123 University Ave, St Paul, MN" -> "UNIVERSITY"
+// e.g., "Snelling Avenue" -> "SNELLING"
+function extractStreetName(address) {
+    if (!address) return '';
+    
+    // Common street suffixes to help identify street names
+    const suffixes = ['AVE', 'AVENUE', 'ST', 'STREET', 'BLVD', 'BOULEVARD', 'DR', 'DRIVE', 
+                      'RD', 'ROAD', 'LN', 'LANE', 'WAY', 'CT', 'COURT', 'PL', 'PLACE',
+                      'PKWY', 'PARKWAY', 'CIR', 'CIRCLE'];
+    
+    // Clean up the address - uppercase and remove extra spaces
+    let cleaned = address.toUpperCase().trim();
+    
+    // Remove city/state/zip if present (everything after first comma usually)
+    const commaIndex = cleaned.indexOf(',');
+    if (commaIndex > 0) {
+        cleaned = cleaned.substring(0, commaIndex);
+    }
+    
+    // Split into words
+    const words = cleaned.split(/\s+/);
+    
+    // Try to find the street name (word before a suffix, or just the main word)
+    for (let i = 0; i < words.length; i++) {
+        if (suffixes.includes(words[i]) && i > 0) {
+            // Return the word before the suffix (the actual street name)
+            // Skip numbers at the start
+            let streetName = words[i - 1];
+            if (!/^\d+$/.test(streetName)) {
+                return streetName;
+            }
+        }
+    }
+    
+    // Fallback: return the longest non-numeric word (likely the street name)
+    const nonNumericWords = words.filter(w => !/^\d+X*$/.test(w) && w.length > 2);
+    if (nonNumericWords.length > 0) {
+        return nonNumericWords.reduce((a, b) => a.length >= b.length ? a : b);
+    }
+    
+    return cleaned;
 }
 
 // Clear search marker and reset search
@@ -575,6 +648,12 @@ async function useLocalhost() {
 
 // computed property - filters incidents based on current filter selections
 const filteredIncidents = computed(() => {
+    // Helper: get date string for comparisons
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
     // First apply filters
     let filtered = incidents.value.filter(inc => {
         // Core requirement: filter by visible map area
@@ -582,16 +661,26 @@ const filteredIncidents = computed(() => {
             if (!visibleNeighborhoods.value.includes(inc.neighborhood_number)) return false;
         }
         
-        // date filter
-        if (filters.start_date && inc.date < filters.start_date) return false;
-        if (filters.end_date && inc.date > filters.end_date) return false;
-        
-        // crime type filter (if any selected)
-        if (filters.selected_codes.length > 0) {
-            if (!filters.selected_codes.includes(inc.code)) return false;
+        // Date filter dropdown (new Option A style)
+        if (dateFilter.value === 'today') {
+            if (inc.date !== todayStr) return false;
+        } else if (dateFilter.value === 'week') {
+            if (inc.date < weekAgo) return false;
+        } else if (dateFilter.value === 'month') {
+            if (inc.date < monthAgo) return false;
+        } else if (dateFilter.value === 'custom') {
+            // Use custom date range inputs
+            if (filters.start_date && inc.date < filters.start_date) return false;
+            if (filters.end_date && inc.date > filters.end_date) return false;
         }
         
-        // neighborhood filter
+        // Type filter dropdown (new Option A style)
+        if (typeFilter.value !== 'all') {
+            const category = getCrimeCategory(inc.code);
+            if (typeFilter.value !== category) return false;
+        }
+        
+        // Neighborhood filter
         if (filters.selected_neighborhood !== '') {
             if (inc.neighborhood_number != filters.selected_neighborhood) return false;
         }
@@ -662,6 +751,176 @@ const filteredIncidents = computed(() => {
     });
     
     return filtered;
+});
+
+// Smart search: generate categorized suggestions based on search input
+const smartSearchSuggestions = computed(() => {
+    const query = tableSearch.value.trim().toLowerCase();
+    if (!query || query.length < 2) return [];
+    
+    const suggestions = [];
+    const MAX_PER_CATEGORY = 3;
+    
+    // Category 1: Case numbers (exact or partial match)
+    const caseMatches = incidents.value
+        .filter(inc => inc.case_number.toString().toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => ({
+            type: 'case',
+            label: inc.case_number,
+            display: `Case #${inc.case_number}`,
+            incident: inc
+        }));
+    suggestions.push(...caseMatches);
+    
+    // Category 2: Addresses/Blocks (unique blocks that match)
+    const seenBlocks = new Set();
+    const blockMatches = incidents.value
+        .filter(inc => {
+            const block = inc.block.toLowerCase();
+            if (seenBlocks.has(block)) return false;
+            if (!block.includes(query)) return false;
+            seenBlocks.add(block);
+            return true;
+        })
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => ({
+            type: 'address',
+            label: inc.block,
+            display: inc.block,
+            incident: inc
+        }));
+    suggestions.push(...blockMatches);
+    
+    // Category 3: Crime types (from codes that match, linked to first incident with that code)
+    const crimeTypeMatches = codes.value
+        .filter(c => c.type.toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(c => {
+            const firstIncident = incidents.value.find(inc => inc.code === c.code);
+            return {
+                type: 'crime',
+                label: c.type,
+                display: c.type,
+                code: c.code,
+                incident: firstIncident || null
+            };
+        })
+        .filter(s => s.incident !== null); // only include if there's a matching incident
+    suggestions.push(...crimeTypeMatches);
+    
+    return suggestions.slice(0, 8); // max 8 total suggestions
+});
+
+// Active filters: generate list of active filter chips for display
+const activeFilters = computed(() => {
+    const chips = [];
+    
+    // Date range
+    if (filters.start_date && filters.end_date) {
+        chips.push({
+            id: 'date-range',
+            label: `${filters.start_date} to ${filters.end_date}`,
+            type: 'date',
+            clear: () => { filters.start_date = ''; filters.end_date = ''; }
+        });
+    } else if (filters.start_date) {
+        chips.push({
+            id: 'start-date',
+            label: `From ${filters.start_date}`,
+            type: 'date',
+            clear: () => { filters.start_date = ''; }
+        });
+    } else if (filters.end_date) {
+        chips.push({
+            id: 'end-date',
+            label: `Until ${filters.end_date}`,
+            type: 'date',
+            clear: () => { filters.end_date = ''; }
+        });
+    }
+    
+    // Selected crime types
+    filters.selected_codes.forEach(code => {
+        const crimeType = codes.value.find(c => c.code === code);
+        if (crimeType) {
+            chips.push({
+                id: `crime-${code}`,
+                label: crimeType.type,
+                type: 'crime',
+                clear: () => { filters.selected_codes = filters.selected_codes.filter(c => c !== code); }
+            });
+        }
+    });
+    
+    // Selected neighborhood
+    if (filters.selected_neighborhood) {
+        const neighborhood = neighborhoods.value.find(n => n.id == filters.selected_neighborhood);
+        if (neighborhood) {
+            chips.push({
+                id: 'neighborhood',
+                label: neighborhood.name,
+                type: 'neighborhood',
+                clear: () => { filters.selected_neighborhood = ''; }
+            });
+        }
+    }
+    
+    return chips;
+});
+
+// Check if any filters are active (for showing Clear button)
+const hasActiveFilters = computed(() => {
+    return dateFilter.value !== 'all' || 
+           typeFilter.value !== 'all' || 
+           filters.selected_neighborhood !== '' ||
+           tableSearch.value.trim() !== '';
+});
+
+// Map search: generate suggestions from neighborhoods and common addresses
+const mapSearchSuggestions = computed(() => {
+    const query = addressSearch.query.trim().toLowerCase();
+    if (!query || query.length < 2) return [];
+    
+    const suggestions = [];
+    const MAX_PER_CATEGORY = 4;
+    
+    // Category 1: Neighborhoods that match
+    const neighborhoodMatches = neighborhoods.value
+        .filter(n => n.name.toLowerCase().includes(query))
+        .slice(0, MAX_PER_CATEGORY)
+        .map(n => ({
+            type: 'neighborhood',
+            label: n.name,
+            display: n.name,
+            id: n.id
+        }));
+    suggestions.push(...neighborhoodMatches);
+    
+    // Category 2: Unique street names from incidents
+    const seenStreets = new Set();
+    const streetMatches = incidents.value
+        .filter(inc => {
+            // Extract street name from block (e.g., "7XX SNELLING AVE" -> "SNELLING AVE")
+            const streetPart = inc.block.replace(/^\d+X*\s+/, '').toUpperCase();
+            if (seenStreets.has(streetPart)) return false;
+            if (!streetPart.toLowerCase().includes(query)) return false;
+            seenStreets.add(streetPart);
+            return true;
+        })
+        .slice(0, MAX_PER_CATEGORY)
+        .map(inc => {
+            const streetPart = inc.block.replace(/^\d+X*\s+/, '').toUpperCase();
+            return {
+                type: 'street',
+                label: streetPart,
+                display: streetPart + ', St Paul',
+                block: inc.block
+            };
+        });
+    suggestions.push(...streetMatches);
+    
+    return suggestions.slice(0, 6);
 });
 
 // categorize crime by type for color coding
@@ -928,6 +1187,251 @@ function getSortIndicator(field) {
     return tableSort.direction === 'asc' ? ' ▲' : ' ▼';
 }
 
+// Smart search: get category label for display
+function getCategoryLabel(type) {
+    switch(type) {
+        case 'case': return 'Case #';
+        case 'address': return 'Address';
+        case 'crime': return 'Crime Type';
+        default: return '';
+    }
+}
+
+// Smart search: highlight matching text in suggestion
+function highlightMatch(text, query) {
+    if (!query.trim()) return text;
+    const regex = new RegExp(`(${query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<mark>$1</mark>');
+}
+
+// Smart search: handle blur to close dropdown (with delay for click to register)
+function handleSearchBlur() {
+    setTimeout(() => {
+        smartSearchOpen.value = false;
+        smartSearchIndex.value = -1;
+    }, 150);
+}
+
+// Smart search: clear search and reset state
+function clearSmartSearch() {
+    tableSearch.value = '';
+    smartSearchOpen.value = false;
+    smartSearchIndex.value = -1;
+}
+
+// Smart search: handle keyboard navigation
+function handleSearchKeydown(event) {
+    const suggestions = smartSearchSuggestions.value;
+    
+    if (!smartSearchOpen.value || suggestions.length === 0) {
+        // If dropdown is closed and user presses down, open it
+        if (event.key === 'ArrowDown' && tableSearch.value.trim().length >= 2) {
+            smartSearchOpen.value = true;
+            smartSearchIndex.value = 0;
+            event.preventDefault();
+        }
+        return;
+    }
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            smartSearchIndex.value = (smartSearchIndex.value + 1) % suggestions.length;
+            break;
+        case 'ArrowUp':
+            event.preventDefault();
+            smartSearchIndex.value = smartSearchIndex.value <= 0 
+                ? suggestions.length - 1 
+                : smartSearchIndex.value - 1;
+            break;
+        case 'Enter':
+            event.preventDefault();
+            if (smartSearchIndex.value >= 0 && smartSearchIndex.value < suggestions.length) {
+                selectSuggestion(suggestions[smartSearchIndex.value]);
+            }
+            break;
+        case 'Escape':
+            smartSearchOpen.value = false;
+            smartSearchIndex.value = -1;
+            break;
+    }
+}
+
+// Smart search: select a suggestion and jump to the incident
+function selectSuggestion(suggestion) {
+    smartSearchOpen.value = false;
+    smartSearchIndex.value = -1;
+    
+    if (!suggestion.incident) return;
+    
+    const caseNum = suggestion.incident.case_number;
+    
+    // Clear search to show all results (so we can find the row)
+    tableSearch.value = '';
+    
+    // Jump to the incident in the table
+    jumpToIncidentByCase(caseNum);
+}
+
+// Jump to a specific incident by case number
+function jumpToIncidentByCase(caseNum) {
+    // Retry mechanism to find the row (data might still be rendering)
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    function findAndHighlight() {
+        attempts++;
+        const row = document.querySelector(`tr[data-case="${caseNum}"]`);
+        
+        if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('highlight-row');
+            // Keep highlight for 5 seconds
+            setTimeout(() => row.classList.remove('highlight-row'), 5000);
+        } else if (attempts < maxAttempts) {
+            // Try again in 100ms
+            setTimeout(findAndHighlight, 100);
+        } else {
+            // Final fallback: scroll to table
+            const table = document.querySelector('.crime-table');
+            if (table) {
+                table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+    }
+    
+    // Start searching after a short delay to let Vue re-render
+    setTimeout(findAndHighlight, 50);
+}
+
+// Filter panel: clear all filters
+function clearAllFilters() {
+    // Reset Option A dropdowns
+    dateFilter.value = 'all';
+    typeFilter.value = 'all';
+    filters.selected_neighborhood = '';
+    // Reset custom date range
+    filters.start_date = '';
+    filters.end_date = '';
+    // Clear search
+    tableSearch.value = '';
+}
+
+// Filter panel: toggle quick category filter (Violent/Property/Other)
+function toggleCategoryFilter(category) {
+    // Get all codes in this category
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    
+    // Check if all codes in this category are already selected
+    const allSelected = categoryCodes.every(code => filters.selected_codes.includes(code));
+    
+    if (allSelected) {
+        // Remove all codes in this category
+        filters.selected_codes = filters.selected_codes.filter(code => !categoryCodes.includes(code));
+    } else {
+        // Add all codes in this category (without duplicates)
+        const newCodes = [...new Set([...filters.selected_codes, ...categoryCodes])];
+        filters.selected_codes = newCodes;
+    }
+}
+
+// Check if a category filter is active
+function isCategoryActive(category) {
+    const categoryCodes = codes.value
+        .filter(c => getCrimeCategory(c.code) === category)
+        .map(c => c.code);
+    return categoryCodes.length > 0 && categoryCodes.every(code => filters.selected_codes.includes(code));
+}
+
+// Map search: handle blur to close dropdown
+function handleMapSearchBlur() {
+    setTimeout(() => {
+        mapSearchOpen.value = false;
+        mapSearchIndex.value = -1;
+    }, 150);
+}
+
+// Map search: handle keyboard navigation
+function handleMapSearchKeydown(event) {
+    const suggestions = mapSearchSuggestions.value;
+    
+    if (!mapSearchOpen.value || suggestions.length === 0) {
+        if (event.key === 'ArrowDown' && addressSearch.query.trim().length >= 2) {
+            mapSearchOpen.value = true;
+            mapSearchIndex.value = 0;
+            event.preventDefault();
+        }
+        return;
+    }
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            mapSearchIndex.value = (mapSearchIndex.value + 1) % suggestions.length;
+            break;
+        case 'ArrowUp':
+            event.preventDefault();
+            mapSearchIndex.value = mapSearchIndex.value <= 0 
+                ? suggestions.length - 1 
+                : mapSearchIndex.value - 1;
+            break;
+        case 'Enter':
+            event.preventDefault();
+            if (mapSearchIndex.value >= 0 && mapSearchIndex.value < suggestions.length) {
+                selectMapSuggestion(suggestions[mapSearchIndex.value]);
+            } else {
+                searchAddress(); // Normal search if no suggestion selected
+            }
+            break;
+        case 'Escape':
+            mapSearchOpen.value = false;
+            mapSearchIndex.value = -1;
+            break;
+    }
+}
+
+// Map search: select a suggestion
+function selectMapSuggestion(suggestion) {
+    mapSearchOpen.value = false;
+    mapSearchIndex.value = -1;
+    
+    if (suggestion.type === 'neighborhood') {
+        // Pan to neighborhood center and filter by neighborhood
+        const nIdx = suggestion.id - 1;
+        if (nIdx >= 0 && nIdx < map.neighborhood_markers.length) {
+            const [lat, lng] = map.neighborhood_markers[nIdx].location;
+            map.leaflet.setView([lat, lng], 14, { animate: true });
+            
+            // Also filter the table to this neighborhood
+            filters.selected_neighborhood = suggestion.id;
+            
+            // Scroll to table
+            setTimeout(() => {
+                const tableSection = document.querySelector('.table-section');
+                if (tableSection) {
+                    tableSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 800);
+        }
+        addressSearch.query = suggestion.display;
+    } else if (suggestion.type === 'street') {
+        // Search for this street and filter table
+        addressSearch.query = suggestion.display;
+        searchAddress();
+    }
+}
+
+// Get map search category label
+function getMapCategoryLabel(type) {
+    switch(type) {
+        case 'neighborhood': return 'Neighborhood';
+        case 'street': return 'Street';
+        default: return '';
+    }
+}
+
 </script>
 
 <template>
@@ -958,34 +1462,57 @@ function getSortIndicator(field) {
     <div class="main-layout">
         <div id="leafletmap"></div>
         
-        <!-- C1: Address search input UI -->
+        <!-- C1: Address search with autocomplete -->
         <div class="search-container">
             <div class="search-box">
                 <input 
                     v-model="addressSearch.query" 
                     type="text" 
-                    placeholder="Search for an address in St. Paul..."
-                    @keyup.enter="searchAddress"
+                    placeholder="Search address, street, or neighborhood..."
+                    @focus="mapSearchOpen = true"
+                    @blur="handleMapSearchBlur"
+                    @keydown="handleMapSearchKeydown"
                     class="search-input"
+                    autocomplete="off"
                 />
                 <button 
                     class="search-button" 
                     @click="searchAddress"
                     :disabled="addressSearch.searching"
                 >
-                    {{ addressSearch.searching ? 'Searching...' : 'Search' }}
+                    {{ addressSearch.searching ? '...' : 'Go' }}
                 </button>
                 <button 
+                    v-if="addressSearch.marker"
                     class="clear-search-button" 
                     @click="clearSearch"
-                    :disabled="!addressSearch.marker"
                     title="Remove search marker"
                 >
                     ✕
                 </button>
+                
+                <!-- Map search dropdown -->
+                <div 
+                    v-if="mapSearchOpen && mapSearchSuggestions.length > 0" 
+                    class="map-search-dropdown"
+                >
+                    <div 
+                        v-for="(suggestion, index) in mapSearchSuggestions" 
+                        :key="`${suggestion.type}-${suggestion.label}`"
+                        class="map-search-item"
+                        :class="{ 
+                            'selected': index === mapSearchIndex,
+                            [`type-${suggestion.type}`]: true
+                        }"
+                        @mousedown.prevent="selectMapSuggestion(suggestion)"
+                        @mouseenter="mapSearchIndex = index"
+                    >
+                        <span class="map-suggestion-category">{{ getMapCategoryLabel(suggestion.type) }}</span>
+                        <span class="map-suggestion-text" v-html="highlightMatch(suggestion.display, addressSearch.query)"></span>
+                    </div>
+                </div>
             </div>
             <p v-if="addressSearch.error" class="search-error">{{ addressSearch.error }}</p>
-            <p class="current-center">Map center: {{ map.center.address || `${map.center.lat.toFixed(4)}, ${map.center.lng.toFixed(4)}` }}</p>
         </div>
         
         <!-- button to show form - positioned over map in top right -->
@@ -995,88 +1522,73 @@ function getSortIndicator(field) {
         <a href="about.html" class="about-link">About</a>
     </div>
 
-    <!-- filters and crime table section -->
+    <!-- Crime table section -->
 <div class="table-section">
-    <h2>Crime Incidents</h2>
     
-    <!-- filter controls -->
-    <div class="filters">
-        <div class="filter-group">
-            <label>Start Date</label>
-            <input type="date" v-model="filters.start_date" />
+    <!-- Minimal filter bar (Option A) -->
+    <div class="filter-bar">
+        <div class="filter-bar-content">
+            <!-- Results count -->
+            <span class="results-label">{{ filteredIncidents.length }} crimes</span>
+            
+            <!-- Filter dropdowns -->
+            <div class="filter-dropdowns">
+                <div class="filter-dropdown">
+                    <label>Date:</label>
+                    <select v-model="dateFilter" class="filter-select" :class="{ active: dateFilter !== 'all' }">
+                        <option value="all">All</option>
+                        <option value="today">Today</option>
+                        <option value="week">Last 7 days</option>
+                        <option value="month">Last 30 days</option>
+                        <option value="custom">Custom...</option>
+                    </select>
+                </div>
+                
+                <div class="filter-dropdown">
+                    <label>Type:</label>
+                    <select v-model="typeFilter" class="filter-select" :class="{ active: typeFilter !== 'all' }">
+                        <option value="all">All</option>
+                        <option value="violent">Violent</option>
+                        <option value="property">Property</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                
+                <div class="filter-dropdown">
+                    <label>Area:</label>
+                    <select v-model="filters.selected_neighborhood" class="filter-select" :class="{ active: filters.selected_neighborhood !== '' }">
+                        <option value="">All</option>
+                        <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                            {{ n.name }}
+                        </option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- Clear button (only shows when filters active) -->
+            <button 
+                v-if="hasActiveFilters"
+                class="clear-filters-btn"
+                @click="clearAllFilters"
+            >
+                Clear
+            </button>
         </div>
-        <div class="filter-group">
-            <label>End Date</label>
-            <input type="date" v-model="filters.end_date" />
-        </div>
-        <div class="filter-group">
-            <label>Max Incidents</label>
-            <select v-model="filters.max_incidents">
-                <option :value="50">50</option>
-                <option :value="100">100</option>
-                <option :value="250">250</option>
-                <option :value="500">500</option>
-                <option :value="1000">1,000</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Crime Type <button class="clear-btn" @click="filters.selected_codes = []">Clear</button></label>
-            <select v-model="filters.selected_codes" multiple>
-                <option v-for="c in codes" :key="c.code" :value="c.code">
-                    {{ c.type }}
-                </option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Neighborhood</label>
-            <select v-model="filters.selected_neighborhood">
-                <option value="">All Neighborhoods</option>
-                <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
-                    {{ n.name }}
-                </option>
-            </select>
-        </div>
-        <div class="filter-group filter-toggle">
-            <label>
-                <input type="checkbox" v-model="filters.limit_to_visible" />
-                Only show crimes in visible map area
-            </label>
+        
+        <!-- Custom date range (shows when Date: Custom is selected) -->
+        <div v-if="dateFilter === 'custom'" class="custom-date-row">
+            <label>From:</label>
+            <input type="date" v-model="filters.start_date" class="date-input" />
+            <label>To:</label>
+            <input type="date" v-model="filters.end_date" class="date-input" />
         </div>
     </div>
-    
-    <!-- results count -->
-    <p class="results-count">Showing {{ filteredIncidents.length }} of {{ incidents.length }} incidents</p>
     
     <!-- Geocoding status message -->
     <div v-if="geocodingStatus" class="geocoding-status">
         {{ geocodingStatus }}
     </div>
     
-    <!-- X4: Table search input -->
-    <div class="table-search-container">
-        <input 
-            v-model="tableSearch" 
-            type="text" 
-            placeholder="Search crimes (case #, date, time, incident, block, neighborhood)..."
-            class="table-search-input"
-        />
-        <button 
-            v-if="tableSearch" 
-            @click="tableSearch = ''"
-            class="table-search-clear"
-            title="Clear search"
-        >
-            ✕
-        </button>
-    </div>
-    
-    <!-- color legend -->
-<div class="legend">
-    <span class="legend-item"><span class="dot violent"></span> Violent</span>
-    <span class="legend-item"><span class="dot property"></span> Property</span>
-    <span class="legend-item"><span class="dot other"></span> Other</span>
-</div>
-
     <!-- crime table -->
     <div class="table-wrapper">
         <table class="crime-table">
@@ -1401,92 +1913,99 @@ function getSortIndicator(field) {
 /* main layout - full screen with padding */
 .main-layout {
     position: relative;
-    padding: 1rem;
-    height: 60vh;
+    padding: 1rem 1rem 0;
+    height: 55vh;
 }
 
 /* map fills the space */
 #leafletmap {
     width: 100%;
     height: 100%;
-    border-radius: 8px;
+    border-radius: 12px 12px 0 0;
 }
 
-/* C1: Address search container */
+/* C1: Address search container - conservative light theme */
 .search-container {
     position: absolute;
     bottom: 1.5rem;
     left: 1.5rem;
     z-index: 500;
-    background: white;
-    padding: 1rem;
+    background: #f8f9fa;
+    padding: 0.75rem;
     border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    min-width: 300px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    min-width: 320px;
+    border: 1px solid #e5e7eb;
 }
 
 .search-box {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
+    position: relative;
 }
 
 .search-input {
     flex: 1;
-    padding: 0.75rem;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    font-size: 0.95rem;
+    padding: 0.5rem 0.75rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    color: #374151;
+}
+
+.search-input::placeholder {
+    color: #9ca3af;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
 }
 
 .search-button {
-    padding: 0.75rem 1.5rem;
-    background: #3b82f6;
+    padding: 0.5rem 0.9rem;
+    background: #4b5563;
     color: white;
     border: none;
-    border-radius: 4px;
-    font-weight: 600;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 0.85rem;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.15s;
 }
 
 .search-button:hover:not(:disabled) {
-    background: #2563eb;
+    background: #374151;
 }
 
 .search-button:disabled {
-    background: #9ca3af;
+    background: #d1d5db;
+    color: #9ca3af;
     cursor: not-allowed;
 }
 
 .clear-search-button {
-    padding: 0.75rem 0.75rem;
+    padding: 0.5rem 0.6rem;
     background: #ef4444;
     color: white;
     border: none;
-    border-radius: 4px;
-    font-weight: 600;
+    border-radius: 6px;
+    font-weight: 500;
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 0.85rem;
+    line-height: 1;
 }
 
-.clear-search-button:hover:not(:disabled) {
+.clear-search-button:hover {
     background: #dc2626;
 }
 
-.clear-search-button:disabled {
-    background: #d1d5db;
-    cursor: not-allowed;
-}
-
 .search-error {
-    color: #d32323;
-    font-size: 0.85rem;
-    margin-top: 0.5rem;
-    margin-bottom: 0;
-}
-
-.current-center {
-    color: #666;
+    color: #fca5a5;
     font-size: 0.8rem;
     margin-top: 0.5rem;
     margin-bottom: 0;
@@ -1807,65 +2326,231 @@ function getSortIndicator(field) {
     }
 }
 
-/* table section */
+/* table section - connects directly with map */
 .table-section {
-    padding: 1rem;
+    padding: 0 1rem 1rem;
     max-width: 1400px;
-    margin: 0 auto;
-}
-.table-section h2 {
-    margin-bottom: 1rem;
-    color: #333;
+    margin: -1px auto 0;
 }
 
-/* filter controls */
-.filters {
+/* ========== OPTION A: MINIMAL DROPDOWN FILTER BAR ========== */
+.filter-bar {
+    background: #f8f9fa;
+    border-bottom: 1px solid #e5e7eb;
+    border-radius: 8px 8px 0 0;
+}
+
+.filter-bar-content {
     display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    padding: 0.75rem 1.25rem;
     flex-wrap: wrap;
-    gap: 1rem;
-    margin-bottom: 1rem;
-    padding: 1rem;
-    background: #f5f5f5;
-    border-radius: 8px;
 }
-.filter-group {
-    display: flex;
-    flex-direction: column;
-    min-width: 150px;
-}
-.filter-group label {
+
+/* Results count label */
+.results-label {
+    font-size: 0.9rem;
     font-weight: 600;
-    margin-bottom: 0.25rem;
-    color: #555;
-}
-.filter-group input,
-.filter-group select {
-    padding: 0.5rem;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
-.filter-group select[multiple] {
-    height: 100px;
-}
-.filter-toggle {
-    display: flex;
-    align-items: center;
-}
-.filter-toggle label {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
+    color: #374151;
     white-space: nowrap;
 }
-.filter-toggle input[type="checkbox"] {
-    width: auto;
-    margin: 0;
+
+/* Filter dropdowns container */
+.filter-dropdowns {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
 }
 
-.results-count {
-    color: #666;
-    margin-bottom: 0.5rem;
+/* Individual filter dropdown */
+.filter-dropdown {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.filter-dropdown label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+/* Select styling */
+.filter-select {
+    padding: 0.4rem 0.6rem;
+    padding-right: 1.5rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #374151;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.4rem center;
+    background-repeat: no-repeat;
+    background-size: 1em 1em;
+}
+
+.filter-select:hover {
+    border-color: #9ca3af;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+/* Active filter indicator - subtle underline */
+.filter-select.active {
+    border-color: #4b5563;
+    font-weight: 600;
+    color: #111827;
+}
+
+.filter-select option {
+    background: white;
+    color: #374151;
+}
+
+/* Clear button */
+.clear-filters-btn {
+    padding: 0.4rem 0.75rem;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #6b7280;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.clear-filters-btn:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+    color: #374151;
+}
+
+/* Custom date range row */
+.custom-date-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1.25rem 0.75rem;
+    background: #f3f4f6;
+    border-top: 1px solid #e5e7eb;
+}
+
+.custom-date-row label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.date-input {
+    padding: 0.35rem 0.5rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    color: #374151;
+    font-size: 0.85rem;
+}
+
+.date-input:focus {
+    outline: none;
+    border-color: #6b7280;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1);
+}
+
+/* Smart search dropdown (used in filter bar) */
+.table-search-wrapper .smart-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: 100;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+/* Map search dropdown - dark theme */
+.search-box {
+    position: relative;
+}
+
+.map-search-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.map-search-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    border-bottom: 1px solid #f3f4f6;
+    transition: background 0.15s ease;
+}
+
+.map-search-item:last-child {
+    border-bottom: none;
+}
+
+.map-search-item:hover,
+.map-search-item.selected {
+    background: #f3f4f6;
+}
+
+.map-suggestion-category {
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    margin-right: 0.5rem;
+    white-space: nowrap;
+}
+
+.map-search-item.type-neighborhood .map-suggestion-category {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.map-search-item.type-street .map-suggestion-category {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.map-suggestion-text {
+    font-size: 0.85rem;
+    color: #374151;
+}
+
+.map-suggestion-text :deep(mark) {
+    background: #fef08a;
+    color: #374151;
+    padding: 0 2px;
+    border-radius: 2px;
 }
 
 /* Geocoding status message - prominent notification */
@@ -2092,5 +2777,100 @@ function getSortIndicator(field) {
 }
 .delete-btn:hover {
     background: #ffcdd2;
+}
+
+/* Smart search dropdown */
+.table-search-container {
+    position: relative;
+}
+
+.smart-search-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 2px solid #3b82f6;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.smart-search-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background 0.15s ease;
+}
+
+.smart-search-item:last-child {
+    border-bottom: none;
+}
+
+.smart-search-item:hover,
+.smart-search-item.selected {
+    background: #f0f7ff;
+}
+
+.smart-search-item.selected {
+    background: #e0efff;
+}
+
+.suggestion-category {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    margin-right: 0.75rem;
+    white-space: nowrap;
+    min-width: 70px;
+    text-align: center;
+}
+
+/* Category colors */
+.smart-search-item.type-case .suggestion-category {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.smart-search-item.type-address .suggestion-category {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.smart-search-item.type-crime .suggestion-category {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.suggestion-text {
+    flex: 1;
+    font-size: 0.95rem;
+    color: #374151;
+}
+
+.suggestion-text :deep(mark) {
+    background: #fef08a;
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+/* Update input styling when dropdown is open */
+.table-search-input:focus {
+    border-color: #3b82f6;
+    outline: none;
+}
+
+.table-search-container:has(.smart-search-dropdown) .table-search-input {
+    border-radius: 8px 8px 0 0;
+    border-color: #3b82f6;
 }
 </style>
