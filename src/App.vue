@@ -117,6 +117,10 @@ let districtLayers = ref({});  // map of neighborhood_id -> Leaflet layer
 const hourLabels = ['12am', '3am', '6am', '9am', '12pm', '3pm', '6pm', '9pm'];
 const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// Cross-filtering state for charts
+let selectedHourBucket = ref(null);  // 0-7 or null for all
+let selectedDayIndex = ref(null);    // 0-6 (Sun-Sat) or null for all
+
 let map = reactive(
     {
         leaflet: null,
@@ -1786,9 +1790,15 @@ function barWidth(count, distribution) {
 }
 
 // Hour distribution with crime type breakdown (8 buckets: 12am, 3am, 6am, 9am, 12pm, 3pm, 6pm, 9pm)
+// Filters by selected day when cross-filtering is active
 const hourDistribution = computed(() => {
     const buckets = Array(8).fill(null).map(() => ({ violent: 0, property: 0, other: 0, total: 0 }));
     filteredIncidents.value.forEach(inc => {
+        // If a day is selected, only count incidents from that day
+        if (selectedDayIndex.value !== null) {
+            const incDayIndex = new Date(inc.date).getDay();
+            if (incDayIndex !== selectedDayIndex.value) return;
+        }
         const hour = parseInt(inc.time.split(':')[0]);
         const bucket = Math.floor(hour / 3);
         const category = getCrimeCategory(inc.code);
@@ -1802,9 +1812,16 @@ const hourDistribution = computed(() => {
 const hourTotals = computed(() => hourDistribution.value.map(b => b.total));
 
 // Day of week distribution with crime type breakdown
+// Filters by selected hour bucket when cross-filtering is active
 const dayDistribution = computed(() => {
     const days = Array(7).fill(null).map(() => ({ violent: 0, property: 0, other: 0, total: 0 })); // Sun-Sat
     filteredIncidents.value.forEach(inc => {
+        // If an hour is selected, only count incidents from that hour bucket
+        if (selectedHourBucket.value !== null) {
+            const incHour = parseInt(inc.time.split(':')[0]);
+            const incBucket = Math.floor(incHour / 3);
+            if (incBucket !== selectedHourBucket.value) return;
+        }
         const dayIndex = new Date(inc.date).getDay();
         const category = getCrimeCategory(inc.code);
         days[dayIndex][category]++;
@@ -1815,6 +1832,33 @@ const dayDistribution = computed(() => {
 
 // Simple day totals for peak calculation
 const dayTotals = computed(() => dayDistribution.value.map(d => d.total));
+
+// Toggle hour bucket selection for cross-filtering
+function toggleHourFilter(bucketIndex) {
+    if (selectedHourBucket.value === bucketIndex) {
+        selectedHourBucket.value = null; // Deselect
+    } else {
+        selectedHourBucket.value = bucketIndex;
+    }
+}
+
+// Toggle day selection for cross-filtering
+function toggleDayFilter(dayIndex) {
+    if (selectedDayIndex.value === dayIndex) {
+        selectedDayIndex.value = null; // Deselect
+    } else {
+        selectedDayIndex.value = dayIndex;
+    }
+}
+
+// Clear all chart filters
+function clearChartFilters() {
+    selectedHourBucket.value = null;
+    selectedDayIndex.value = null;
+}
+
+// Check if any chart filter is active
+const hasChartFilter = computed(() => selectedHourBucket.value !== null || selectedDayIndex.value !== null);
 
 // Calculate stacked bar widths as percentages
 function stackedBarWidths(bucket, maxTotal) {
@@ -2046,13 +2090,21 @@ const topNeighborhoods = computed(() => {
             <div class="charts-row">
                 <!-- Time of Day Chart -->
                 <div class="chart-container">
-                    <h4 class="chart-title">Time of Day</h4>
+                    <h4 class="chart-title">
+                        Time of Day
+                        <span v-if="selectedDayIndex !== null" class="filter-badge">
+                            {{ dayLabels[selectedDayIndex] }} only
+                            <button class="clear-filter-x" @click.stop="selectedDayIndex = null">×</button>
+                        </span>
+                    </h4>
                     <div class="bar-chart">
                         <div 
                             v-for="(bucket, i) in hourDistribution" 
                             :key="'hour-'+i" 
-                            class="bar-row"
-                            :title="`${hourLabels[i]}: ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
+                            class="bar-row clickable-bar"
+                            :class="{ 'selected-bar': selectedHourBucket === i }"
+                            :title="`Click to filter by ${hourLabels[i]} | ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
+                            @click="toggleHourFilter(i)"
                         >
                             <span class="bar-label">{{ hourLabels[i] }}</span>
                             <div class="bar-track stacked">
@@ -2080,14 +2132,24 @@ const topNeighborhoods = computed(() => {
                 
                 <!-- Day of Week Chart -->
                 <div class="chart-container">
-                    <h4 class="chart-title">Day of Week</h4>
+                    <h4 class="chart-title">
+                        Day of Week
+                        <span v-if="selectedHourBucket !== null" class="filter-badge">
+                            {{ hourLabels[selectedHourBucket] }} only
+                            <button class="clear-filter-x" @click.stop="selectedHourBucket = null">×</button>
+                        </span>
+                    </h4>
                     <div class="bar-chart">
                         <div 
                             v-for="(bucket, i) in dayDistribution" 
                             :key="'day-'+i" 
-                            class="bar-row"
-                            :class="{ 'weekend-row': i === 0 || i === 6 }"
-                            :title="`${dayLabels[i]}: ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
+                            class="bar-row clickable-bar"
+                            :class="{ 
+                                'weekend-row': i === 0 || i === 6,
+                                'selected-bar': selectedDayIndex === i
+                            }"
+                            :title="`Click to filter by ${dayLabels[i]} | ${bucket.violent} violent, ${bucket.property} property, ${bucket.other} other`"
+                            @click="toggleDayFilter(i)"
                         >
                             <span class="bar-label">{{ dayLabels[i] }}</span>
                             <div class="bar-track stacked">
@@ -4097,6 +4159,66 @@ const topNeighborhoods = computed(() => {
 
 .bar-segment.other {
     background: #6b7280;
+}
+
+/* Clickable bar rows */
+.bar-row.clickable-bar {
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-radius: 4px;
+    padding: 2px 4px;
+    margin: 0 -4px;
+}
+
+.bar-row.clickable-bar:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.bar-row.clickable-bar:hover .bar-label {
+    color: #60a5fa;
+}
+
+/* Selected bar state */
+.bar-row.selected-bar {
+    background: rgba(59, 130, 246, 0.2);
+    border-left: 3px solid #3b82f6;
+    padding-left: 6px;
+}
+
+.bar-row.selected-bar .bar-label {
+    color: #60a5fa;
+    font-weight: 600;
+}
+
+/* Filter badge in chart title */
+.filter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(59, 130, 246, 0.3);
+    color: #93c5fd;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+}
+
+.clear-filter-x {
+    background: none;
+    border: none;
+    color: #93c5fd;
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 2px;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+.clear-filter-x:hover {
+    opacity: 1;
+    color: #fff;
 }
 
 /* Weekend row indicator */
