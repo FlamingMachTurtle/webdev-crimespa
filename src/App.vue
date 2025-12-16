@@ -4,6 +4,8 @@ import { reactive, ref, onMounted, computed } from 'vue'
 
 let crime_url = ref('');
 let dialog_err = ref(false);
+let dialog_err_msg = ref('');
+let localhost_loading = ref(false);
 
 // data from api - filled after user enters url
 let codes = ref([]);
@@ -24,6 +26,9 @@ let newIncident = reactive({
 let form_error = ref('');
 let form_success = ref(false);
 let form_visible = ref(false); // controls if form is shown or hidden
+let showAdvancedFields = ref(false); // toggle for advanced form fields
+let successPopup = ref(false); // show success popup
+let lastAddedCase = ref(''); // track the last added case number
 
 // filter state
 let filters = reactive({
@@ -336,37 +341,79 @@ function clearSearch() {
 
 // submit new incident to api
 function submitIncident() {
-    // check all fields filled
-    if (!newIncident.case_number || !newIncident.date || !newIncident.time ||
-        !newIncident.code || !newIncident.incident || !newIncident.police_grid ||
-        !newIncident.neighborhood_number || !newIncident.block) {
-        form_error.value = 'fill out all fields';
+    // Check required fields only
+    if (!newIncident.code || !newIncident.neighborhood_number || !newIncident.block) {
+        form_error.value = 'Please fill out Crime Type, Neighborhood, and Address';
         return;
+    }
+    
+    // Auto-generate case number if not provided
+    let caseNumber = newIncident.case_number;
+    if (!caseNumber) {
+        const year = new Date().getFullYear().toString().slice(-2);
+        const randomNum = Math.floor(100000 + Math.random() * 900000);
+        caseNumber = `${year}-${randomNum}`;
+    }
+    
+    // Auto-generate police grid if not set
+    let policeGrid = newIncident.police_grid;
+    if (!policeGrid) {
+        policeGrid = neighborhoodGridMap[newIncident.neighborhood_number] || 87;
+    }
+    
+    // Auto-fill incident description if empty
+    let incidentDesc = newIncident.incident;
+    if (!incidentDesc) {
+        const selectedCode = codes.value.find(c => c.code == newIncident.code);
+        incidentDesc = selectedCode ? selectedCode.type : 'Incident';
     }
     
     form_error.value = '';
     form_success.value = false;
     let api = crime_url.value.replace(/\/+$/, '');
     
+    // Ensure time has seconds (HH:MM:SS format)
+    let timeStr = newIncident.time;
+    if (timeStr && timeStr.length === 5) {
+        timeStr = timeStr + ':00'; // Add seconds if missing
+    }
+    
+    const payload = {
+        case_number: caseNumber,
+        date: newIncident.date,
+        time: timeStr,
+        code: Number(newIncident.code),
+        incident: incidentDesc,
+        police_grid: Number(policeGrid),
+        neighborhood_number: Number(newIncident.neighborhood_number),
+        block: newIncident.block.toUpperCase()
+    };
+    
+    console.log('Submitting incident:', payload);
+    
     // send to api
     fetch(api + '/new-incident', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            case_number: newIncident.case_number,
-            date: newIncident.date,
-            time: newIncident.time,
-            code: Number(newIncident.code),
-            incident: newIncident.incident,
-            police_grid: Number(newIncident.police_grid),
-            neighborhood_number: Number(newIncident.neighborhood_number),
-            block: newIncident.block
-        })
+        body: JSON.stringify(payload)
     })
-    .then(res => res.json())
+    .then(res => {
+        if (!res.ok) {
+            return res.text().then(text => {
+                throw new Error(`Server error: ${res.status} - ${text}`);
+            });
+        }
+        // Server may return "OK" as text or JSON
+        return res.text();
+    })
     .then(data => {
         console.log('incident added:', data);
         form_success.value = true;
+        lastAddedCase.value = caseNumber;
+        
+        // Show success popup
+        successPopup.value = true;
+        
         // clear form
         newIncident.case_number = '';
         newIncident.date = '';
@@ -376,19 +423,100 @@ function submitIncident() {
         newIncident.police_grid = '';
         newIncident.neighborhood_number = '';
         newIncident.block = '';
-        // update crime counts
-        updateNeighborhoodCrimeCounts();
-        addNeighborhoodMarkers();
+        
+        // Refresh the incidents list
+        initializeCrimes();
     })
     .catch(err => {
-        form_error.value = 'failed to add incident';
-        console.log('error:', err);
+        form_error.value = err.message || 'Failed to add incident';
+        console.error('Submit error:', err);
     });
 }
 
 // show or hide the incident form
 function toggleForm() {
     form_visible.value = !form_visible.value;
+    
+    // Auto-populate date and time when opening form
+    if (form_visible.value) {
+        const now = new Date();
+        if (!newIncident.date) {
+            newIncident.date = now.toISOString().split('T')[0]; // YYYY-MM-DD
+        }
+        if (!newIncident.time) {
+            newIncident.time = now.toTimeString().slice(0, 5); // HH:MM
+        }
+        form_error.value = '';
+        form_success.value = false;
+    }
+}
+
+// Auto-fill incident description based on crime type
+function autofillIncidentType() {
+    if (newIncident.code && !newIncident.incident) {
+        const selectedCode = codes.value.find(c => c.code == newIncident.code);
+        if (selectedCode) {
+            newIncident.incident = selectedCode.type;
+        }
+    }
+}
+
+// Auto-assign a reasonable police grid based on neighborhood
+// These are approximate mappings - not exact but good defaults
+const neighborhoodGridMap = {
+    1: 75, 2: 61, 3: 82, 4: 63, 5: 78,
+    6: 85, 7: 93, 8: 48, 9: 52, 10: 51,
+    11: 65, 12: 86, 13: 99, 14: 107, 15: 112,
+    16: 116, 17: 121
+};
+
+function autofillPoliceGrid() {
+    if (newIncident.neighborhood_number && !newIncident.police_grid) {
+        newIncident.police_grid = neighborhoodGridMap[newIncident.neighborhood_number] || 87;
+    }
+}
+
+// Jump to the newly added incident in the table
+function jumpToIncident() {
+    successPopup.value = false;
+    form_visible.value = false;
+    
+    // Retry mechanism to find the row (data might still be loading)
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    function findAndHighlight() {
+        attempts++;
+        const caseNum = lastAddedCase.value;
+        const row = document.querySelector(`tr[data-case="${caseNum}"]`);
+        
+        if (row) {
+            console.log('Found row for case:', caseNum);
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('highlight-row');
+            // Keep highlight for 5 seconds
+            setTimeout(() => row.classList.remove('highlight-row'), 5000);
+        } else if (attempts < maxAttempts) {
+            // Try again in 300ms
+            console.log(`Attempt ${attempts}: Row not found yet, retrying...`);
+            setTimeout(findAndHighlight, 300);
+        } else {
+            // Final fallback: just scroll to table
+            console.log('Could not find row, scrolling to table');
+            const table = document.querySelector('.crime-table');
+            if (table) {
+                table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+    }
+    
+    // Start searching after a short delay
+    setTimeout(findAndHighlight, 500);
+}
+
+// Close success popup
+function closeSuccessPopup() {
+    successPopup.value = false;
 }
 
 // Function called when user presses 'OK' on dialog box
@@ -397,11 +525,51 @@ function closeDialog() {
     let url_input = document.getElementById('dialog-url');
     if (crime_url.value !== '' && url_input.checkValidity()) {
         dialog_err.value = false;
+        dialog_err_msg.value = '';
         dialog.close();
         initializeCrimes();
     }
     else {
         dialog_err.value = true;
+        dialog_err_msg.value = 'Error: must enter valid URL';
+    }
+}
+
+// Quick-fill localhost:8000 with connection test
+async function useLocalhost() {
+    const testUrl = 'http://localhost:8000';
+    localhost_loading.value = true;
+    dialog_err.value = false;
+    dialog_err_msg.value = '';
+    
+    try {
+        // Test connection with a quick fetch to /codes endpoint
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const response = await fetch(`${testUrl}/codes`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+            // Connection successful - close dialog and load data
+            crime_url.value = testUrl;
+            let dialog = document.getElementById('rest-dialog');
+            dialog.close();
+            initializeCrimes();
+        } else {
+            throw new Error('Server returned error');
+        }
+    } catch (error) {
+        // Show error message
+        dialog_err.value = true;
+        if (error.name === 'AbortError') {
+            dialog_err_msg.value = '⚠️ Connection timed out. Is the server running?';
+        } else {
+            dialog_err_msg.value = '⚠️ Cannot connect to localhost:8000. Start the server with: node rest_server.mjs';
+        }
+        console.log('Localhost connection failed:', error);
+    } finally {
+        localhost_loading.value = false;
     }
 }
 
@@ -764,12 +932,26 @@ function getSortIndicator(field) {
 
 <template>
     <dialog id="rest-dialog" open>
-        <h1 class="dialog-header">St. Paul Crime REST API</h1>
-        <label class="dialog-label">URL: </label>
-        <input id="dialog-url" class="dialog-input" type="url" v-model="crime_url" placeholder="http://localhost:8000" />
-        <p class="dialog-error" v-if="dialog_err">Error: must enter valid URL</p>
-        <br/>
-        <button class="button" type="button" @click="closeDialog">OK</button>
+        <div class="dialog-content">
+            <h1 class="dialog-header">St. Paul Crime Map</h1>
+            <p class="dialog-subtitle">Connect to the REST API to load crime data</p>
+            
+            <div class="dialog-input-group">
+                <label class="dialog-label">API Server URL</label>
+                <input id="dialog-url" class="dialog-input" type="url" v-model="crime_url" placeholder="http://localhost:8000" />
+            </div>
+            
+            <p class="dialog-error" v-if="dialog_err">{{ dialog_err_msg }}</p>
+            
+            <div class="dialog-buttons">
+                <button class="button localhost-btn" type="button" @click="useLocalhost" :disabled="localhost_loading">
+                    {{ localhost_loading ? 'Connecting...' : 'Quick Connect' }}
+                </button>
+                <button class="button ok-btn" type="button" @click="closeDialog">Connect</button>
+            </div>
+            
+            <p class="dialog-hint">Quick Connect uses localhost:8000</p>
+        </div>
     </dialog>
     
     <!-- main layout - map + button -->
@@ -922,7 +1104,7 @@ function getSortIndicator(field) {
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="inc in filteredIncidents" :key="inc.case_number" :class="getCrimeCategory(inc.code)">
+                <tr v-for="inc in filteredIncidents" :key="inc.case_number" :class="getCrimeCategory(inc.code)" :data-case="inc.case_number">
                     <td>{{ inc.case_number }}</td>
                     <td>{{ inc.date }}</td>
                     <td>{{ inc.time }}</td>
@@ -991,48 +1173,75 @@ function getSortIndicator(field) {
     <!-- new incident form - slides in from right when visible -->
     <div class="incident-form" :class="{ visible: form_visible }">
         <div class="form-header">
-            <h3>Add New Incident</h3>
+            <h3>Report New Incident</h3>
             <button class="close-form" @click="toggleForm">×</button>
         </div>
         
-        <label>Case Number</label>
-        <input v-model="newIncident.case_number" placeholder="24-123456" />
+        <div class="form-section">
+            <div class="form-row">
+                <div class="form-field">
+                    <label>Date</label>
+                    <input v-model="newIncident.date" type="date" />
+                </div>
+                <div class="form-field">
+                    <label>Time</label>
+                    <input v-model="newIncident.time" type="time" />
+                </div>
+            </div>
+            
+            <label>Crime Type <span class="required">*</span></label>
+            <select v-model="newIncident.code" @change="autofillIncidentType">
+                <option value="">-- Select crime type --</option>
+                <option v-for="c in codes" :key="c.code" :value="c.code">
+                    {{ c.type }}
+                </option>
+            </select>
+            
+            <label>Neighborhood <span class="required">*</span></label>
+            <select v-model="newIncident.neighborhood_number" @change="autofillPoliceGrid">
+                <option value="">-- Select neighborhood --</option>
+                <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
+                    {{ n.name }}
+                </option>
+            </select>
+            
+            <label>Block Address <span class="required">*</span></label>
+            <input v-model="newIncident.block" placeholder="e.g. 7XX UNIVERSITY AVE" />
+            <span class="field-hint">Use XX for privacy (e.g. 12XX MAIN ST)</span>
+            
+            <label>Description</label>
+            <input v-model="newIncident.incident" placeholder="Brief description of incident" />
+        </div>
         
-        <label>Date</label>
-        <input v-model="newIncident.date" type="date" />
+        <div class="form-section form-advanced" v-if="showAdvancedFields">
+            <label>Case Number</label>
+            <input v-model="newIncident.case_number" placeholder="Auto-generated if blank" />
+            
+            <label>Police Grid</label>
+            <input v-model="newIncident.police_grid" type="number" placeholder="Auto-assigned based on neighborhood" />
+        </div>
         
-        <label>Time</label>
-        <input v-model="newIncident.time" type="time" step="1" />
+        <button type="button" class="toggle-advanced" @click="showAdvancedFields = !showAdvancedFields">
+            {{ showAdvancedFields ? '▼ Hide advanced fields' : '▶ Show advanced fields' }}
+        </button>
         
-        <label>Crime Type</label>
-        <select v-model="newIncident.code">
-            <option value="">-- pick one --</option>
-            <option v-for="c in codes" :key="c.code" :value="c.code">
-                {{ c.type }}
-            </option>
-        </select>
-        
-        <label>Incident Description</label>
-        <input v-model="newIncident.incident" placeholder="what happened" />
-        
-        <label>Police Grid</label>
-        <input v-model="newIncident.police_grid" type="number" placeholder="87" />
-        
-        <label>Neighborhood</label>
-        <select v-model="newIncident.neighborhood_number">
-            <option value="">-- pick one --</option>
-            <option v-for="n in neighborhoods" :key="n.id" :value="n.id">
-                {{ n.name }}
-            </option>
-        </select>
-        
-        <label>Block Address</label>
-        <input v-model="newIncident.block" placeholder="1XX MAIN ST" />
-        
-        <button class="button" @click="submitIncident">Submit</button>
+        <button class="button submit-btn" @click="submitIncident">Submit Report</button>
         
         <p v-if="form_error" class="form-error">{{ form_error }}</p>
-        <p v-if="form_success" class="form-success">incident added!</p>
+    </div>
+    
+    <!-- Success popup overlay -->
+    <div class="success-overlay" v-if="successPopup" @click.self="closeSuccessPopup">
+        <div class="success-popup">
+            <div class="success-icon">✓</div>
+            <h2>Incident Reported!</h2>
+            <p class="success-case">Case #{{ lastAddedCase }}</p>
+            <p class="success-message">Your incident has been added to the database and will appear in the Crime Incidents table below.</p>
+            <div class="success-buttons">
+                <button class="btn-jump" @click="jumpToIncident">Jump to Incident</button>
+                <button class="btn-close" @click="closeSuccessPopup">Close</button>
+            </div>
+        </div>
     </div>
 </template>
 
@@ -1058,24 +1267,135 @@ function getSortIndicator(field) {
 }
 /* dialog for api url */
 #rest-dialog {
-    width: 20rem;
-    margin-top: 1rem;
+    width: 340px;
+    margin: 0;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
     z-index: 1000;
+    padding: 0;
+    border-radius: 16px;
+    border: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    overflow: hidden;
 }
+
+#rest-dialog::backdrop {
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px);
+}
+
+.dialog-content {
+    background: white;
+    margin: 3px;
+    border-radius: 14px;
+    padding: 1.25rem;
+    text-align: center;
+}
+
 .dialog-header {
-    font-size: 1.2rem;
-    font-weight: bold;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0 0 0.25rem 0;
 }
+
+.dialog-subtitle {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin: 0 0 1rem 0;
+}
+
+.dialog-input-group {
+    text-align: left;
+    margin-bottom: 0.75rem;
+}
+
 .dialog-label {
-    font-size: 1rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #374151;
+    display: block;
+    margin-bottom: 0.25rem;
 }
+
 .dialog-input {
-    font-size: 1rem;
+    font-size: 0.9rem;
     width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
 }
+
+.dialog-input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
 .dialog-error {
-    font-size: 1rem;
-    color: #D32323;
+    font-size: 0.8rem;
+    color: #dc2626;
+    background: #fef2f2;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    margin: 0 0 0.75rem 0;
+    text-align: left;
+}
+
+/* Dialog buttons container */
+.dialog-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.dialog-buttons .button {
+    flex: 1;
+    padding: 0.65rem 0.5rem;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+/* Quick connect button */
+.localhost-btn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    color: white !important;
+}
+
+.localhost-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.localhost-btn:disabled {
+    background: #9ca3af !important;
+    cursor: wait;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Connect button */
+.ok-btn {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.ok-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.dialog-hint {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin: 0.75rem 0 0 0;
 }
 
 /* main layout - full screen with padding */
@@ -1199,13 +1519,13 @@ function getSortIndicator(field) {
     top: 1rem;
     right: -450px; /* hidden off screen */
     width: 400px;
-    height: calc(100vh - 4rem); /* leave room at bottom for leaflet watermark */
+    height: calc(100vh - 4rem);
     background: white;
     padding: 2rem;
     overflow-y: auto;
     box-shadow: -2px 0 10px rgba(0,0,0,0.2);
     transition: right 0.3s ease; /* smooth slide */
-    z-index: 600;
+    z-index: 1500; /* above leaflet controls */
     border-radius: 8px;
 }
 .incident-form.visible {
@@ -1240,36 +1560,106 @@ function getSortIndicator(field) {
     color: #333 !important;
 }
 
+/* form sections */
+.form-section {
+    margin-bottom: 0.5rem;
+}
+
+.form-row {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.form-field {
+    flex: 1;
+}
+
+.form-field label {
+    margin-top: 0;
+}
+
 /* form fields */
 .incident-form label {
     display: block;
-    margin-top: 1rem;
-    font-weight: bold;
-    color: #555;
+    margin-top: 0.75rem;
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.9rem;
 }
+
+.incident-form label .required {
+    color: #dc2626;
+}
+
 .incident-form input, 
 .incident-form select {
     width: 100%;
-    padding: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+}
+
+.incident-form input:focus,
+.incident-form select:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.field-hint {
+    display: block;
+    font-size: 0.75rem;
+    color: #6b7280;
     margin-top: 0.25rem;
-    border: 1px solid #ccc;
+}
+
+/* advanced fields section */
+.form-advanced {
+    background: #f9fafb;
+    padding: 0.75rem;
+    border-radius: 6px;
+    margin-top: 0.5rem;
+}
+
+.toggle-advanced {
+    width: 100%;
+    background: none;
+    border: none;
+    color: #6b7280;
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 0.5rem;
+    margin-top: 0.5rem;
+    text-align: left;
+}
+
+.toggle-advanced:hover {
+    color: #374151;
+    background: #f3f4f6;
     border-radius: 4px;
 }
 
-/* submit button at bottom with proper spacing */
-.incident-form button {
+/* submit button */
+.submit-btn {
     width: 100%;
-    margin-top: 1.5rem;
+    margin-top: 1rem !important;
     padding: 0.75rem;
-    background: #3b82f6;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
     color: white;
     border: none;
     border-radius: 6px;
     font-weight: 600;
+    font-size: 1rem;
     cursor: pointer;
+    transition: all 0.2s;
 }
-.incident-form button:hover {
-    background: #2563eb;
+
+.submit-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
 }
 
 /* error and success messages */
@@ -1277,9 +1667,144 @@ function getSortIndicator(field) {
     color: #D32323; 
     margin-top: 0.5rem;
 }
-.form-success { 
-    color: #2E7D32;
-    margin-top: 0.5rem;
+
+/* Success popup overlay */
+.success-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.success-popup {
+    background: white;
+    border-radius: 16px;
+    padding: 2rem;
+    text-align: center;
+    max-width: 400px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    animation: popIn 0.3s ease;
+}
+
+@keyframes popIn {
+    from { 
+        transform: scale(0.8);
+        opacity: 0;
+    }
+    to { 
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.success-icon {
+    width: 64px;
+    height: 64px;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    font-size: 2rem;
+    font-weight: bold;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+}
+
+.success-popup h2 {
+    color: #1f2937;
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+}
+
+.success-case {
+    color: #6b7280;
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+    font-family: monospace;
+    background: #f3f4f6;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.success-message {
+    color: #4b5563;
+    font-size: 0.95rem;
+    margin: 0 0 1.5rem;
+    line-height: 1.5;
+}
+
+.success-buttons {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.success-buttons button {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+}
+
+.btn-jump {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.btn-jump:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.btn-close {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.btn-close:hover {
+    background: #e5e7eb;
+}
+
+/* Highlight newly added row */
+.crime-table tbody tr.highlight-row {
+    animation: highlightPulse 0.5s ease infinite alternate;
+    background-color: #4ade80 !important;
+    outline: 4px solid #16a34a;
+    outline-offset: -2px;
+}
+
+.crime-table tbody tr.highlight-row td {
+    font-weight: 700 !important;
+    color: #14532d !important;
+}
+
+@keyframes highlightPulse {
+    from { 
+        background-color: #4ade80;
+        outline-color: #16a34a;
+    }
+    to { 
+        background-color: #22c55e;
+        outline-color: #15803d;
+    }
 }
 
 /* table section */
