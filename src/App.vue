@@ -91,8 +91,6 @@ let manualCoords = reactive({
 
 // Debounce timer for reverse geocoding
 let reverseGeocodeTimer = null;
-// Track last user search to avoid overwriting user searches
-let lastUserSearch = '';
 
 // B3: neighborhood crime counts
 let neighborhoodCrimeCounts = reactive({});
@@ -325,9 +323,6 @@ async function searchAddress() {
     addressSearch.error = '';
     addressSearch.lat = null;
     addressSearch.lng = null;
-    
-    // Track this as a user-initiated search
-    lastUserSearch = addressSearch.query;
 
     try {
         // C2: Use Nominatim API to geocode address
@@ -449,7 +444,6 @@ function clearSearch() {
     addressSearch.error = '';
     addressSearch.lat = null;
     addressSearch.lng = null;
-    lastUserSearch = '';
     
     // Trigger an immediate reverse geocode to fill in current location
     setTimeout(() => {
@@ -464,13 +458,13 @@ function updateSearchFromMapPosition() {
         clearTimeout(reverseGeocodeTimer);
     }
     
-    // Wait 2.5 seconds after user stops moving the map before making API call
+    // Wait 2 seconds after user stops moving the map before making API call
     reverseGeocodeTimer = setTimeout(async () => {
         if (!map.leaflet) return;
         
-        // Don't override if user has typed something recently
-        if (addressSearch.searching || addressSearch.marker) {
-            console.log('Skipping reverse geocode - user has active search');
+        // Don't override if user is actively searching
+        if (addressSearch.searching) {
+            console.log('Skipping reverse geocode - search in progress');
             return;
         }
         
@@ -520,11 +514,9 @@ function updateSearchFromMapPosition() {
                     displayAddress = result.display_name || `${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}`;
                 }
                 
-                // Only update if query is empty or hasn't been modified by user
-                if (!addressSearch.query || addressSearch.query === lastUserSearch) {
-                    addressSearch.query = displayAddress;
-                    console.log('Reverse geocoded:', displayAddress);
-                }
+                // Always update with the new location
+                addressSearch.query = displayAddress;
+                console.log('Reverse geocoded:', displayAddress);
             }
         } catch (error) {
             console.log('Reverse geocoding failed:', error);
@@ -532,7 +524,7 @@ function updateSearchFromMapPosition() {
         } finally {
             addressSearch.autoUpdating = false;
         }
-    }, 2500); // 2.5 second debounce to reduce API calls
+    }, 2000); // 2 second debounce to reduce API calls
 }
 
 // Handle manual latitude/longitude input
@@ -1672,9 +1664,6 @@ function handleMapSearchKeydown(event) {
 function selectMapSuggestion(suggestion) {
     mapSearchOpen.value = false;
     mapSearchIndex.value = -1;
-    
-    // Track as user search
-    lastUserSearch = suggestion.display;
     
     if (suggestion.type === 'neighborhood') {
         // Pan to neighborhood center and filter by neighborhood
