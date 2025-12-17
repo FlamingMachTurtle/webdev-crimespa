@@ -105,7 +105,8 @@
             color: #666;
         }
 
-        .video-container iframe {
+        .video-container iframe,
+        .video-container video {
             width: 100%;
             height: 100%;
             border-radius: 8px;
@@ -171,9 +172,10 @@
 
     <h2>Demo Video</h2>
     <div class="video-container">
-        <!-- Uncomment and add your YouTube video ID -->
-        <!-- <iframe src="https://www.youtube.com/embed/VIDEO_ID" allowfullscreen></iframe> -->
-        <p>Video Demo</p>
+        <video controls width="100%">
+            <source src="video/video.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
     </div>
 
 <h2>Findings</h2>
