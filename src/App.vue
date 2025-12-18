@@ -393,20 +393,48 @@ async function searchAddress() {
         addressSearch.lat = parseFloat(result.lat);
         addressSearch.lng = parseFloat(result.lon);
 
-        // C3: Center map on search result
-        map.leaflet.setView([addressSearch.lat, addressSearch.lng], 15);
-        
         // Remove old marker if it exists
         if (addressSearch.marker) {
             map.leaflet.removeLayer(addressSearch.marker);
+            addressSearch.marker = null;
         }
         
-        // Add a marker at the search location
-        addressSearch.marker = L.marker([addressSearch.lat, addressSearch.lng], {
-            title: addressSearch.query
-        }).bindPopup(`<b>Search Result</b><br/>${addressSearch.query}`)
-         .openPopup()
-         .addTo(map.leaflet);
+        // C3: Center map on search result (with animation)
+        map.leaflet.setView([addressSearch.lat, addressSearch.lng], 15, { animate: true });
+        
+        // Wait for map animation to complete, then add marker
+        setTimeout(() => {
+            // Create a custom blue pin icon for search results
+            const searchIcon = L.icon({
+                iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
+                        <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#3b82f6" stroke="white" stroke-width="1.5"/>
+                        <circle cx="12" cy="12" r="4" fill="white"/>
+                    </svg>
+                `),
+                iconSize: [24, 32],
+                iconAnchor: [12, 32],
+                popupAnchor: [0, -32]
+            });
+            
+            // Add a marker at the search location
+            addressSearch.marker = L.marker([addressSearch.lat, addressSearch.lng], {
+                icon: searchIcon,
+                title: addressSearch.query,
+                zIndexOffset: 1000 // Ensure search marker appears above other markers
+            }).bindPopup(`<b>Search Result</b><br/>${addressSearch.query}`)
+             .addTo(map.leaflet);
+            
+            // Open popup after marker is added
+            setTimeout(() => {
+                if (addressSearch.marker) {
+                    addressSearch.marker.openPopup();
+                }
+            }, 100);
+            
+            // Force map to recalculate marker positions
+            map.leaflet.invalidateSize();
+        }, 500);
 
         // Extract street name from query for table filtering
         // e.g., "123 University Ave, St Paul" -> "UNIVERSITY"
@@ -593,19 +621,48 @@ function updateMapFromCoords() {
     
     addressSearch.error = '';
     
-    // Update map center
-    map.leaflet.setView([lat, lng], map.leaflet.getZoom());
-    
-    // Add a marker at the specified location
+    // Remove old marker if it exists
     if (addressSearch.marker) {
         map.leaflet.removeLayer(addressSearch.marker);
+        addressSearch.marker = null;
     }
     
-    addressSearch.marker = L.marker([lat, lng], {
-        title: `${lat}, ${lng}`
-    }).bindPopup(`<b>Manual Location</b><br/>${lat.toFixed(6)}, ${lng.toFixed(6)}`)
-     .openPopup()
-     .addTo(map.leaflet);
+    // Update map center
+    map.leaflet.setView([lat, lng], map.leaflet.getZoom(), { animate: true });
+    
+    // Wait for map animation to complete, then add marker
+    setTimeout(() => {
+        // Create a custom blue pin icon for search results
+        const searchIcon = L.icon({
+            iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32" width="24" height="32">
+                    <path d="M12 0C5.4 0 0 5.4 0 12c0 10 12 20 12 20s12-10 12-20c0-6.6-5.4-12-12-12z" fill="#3b82f6" stroke="white" stroke-width="1.5"/>
+                    <circle cx="12" cy="12" r="4" fill="white"/>
+                </svg>
+            `),
+            iconSize: [24, 32],
+            iconAnchor: [12, 32],
+            popupAnchor: [0, -32]
+        });
+        
+        // Add a marker at the specified location
+        addressSearch.marker = L.marker([lat, lng], {
+            icon: searchIcon,
+            title: `${lat}, ${lng}`,
+            zIndexOffset: 1000 // Ensure search marker appears above other markers
+        }).bindPopup(`<b>Manual Location</b><br/>${lat.toFixed(6)}, ${lng.toFixed(6)}`)
+         .addTo(map.leaflet);
+        
+        // Open popup after marker is added
+        setTimeout(() => {
+            if (addressSearch.marker) {
+                addressSearch.marker.openPopup();
+            }
+        }, 100);
+        
+        // Force map to recalculate marker positions
+        map.leaflet.invalidateSize();
+    }, 300);
 }
 
 // Handle when user starts/stops editing coordinate fields
@@ -1589,6 +1646,8 @@ function clearAllFilters() {
     // Reset custom date range
     filters.start_date = '';
     filters.end_date = '';
+    // Reset max incidents
+    filters.max_incidents = 1000;
     // Clear search
     tableSearch.value = '';
     // Close panel
@@ -2286,6 +2345,20 @@ const topNeighborhoods = computed(() => {
                         {{ n.name }}
                     </option>
                 </select>
+            </div>
+            
+            <!-- Max incidents -->
+            <div class="filter-group">
+                <label class="filter-label">Max</label>
+                <input 
+                    type="number" 
+                    v-model.number="filters.max_incidents" 
+                    class="filter-select max-input"
+                    :class="{ active: filters.max_incidents !== 1000 }"
+                    min="1" 
+                    max="10000"
+                    placeholder="1000"
+                />
             </div>
         </div>
         
@@ -3350,6 +3423,21 @@ const topNeighborhoods = computed(() => {
     font-weight: 700;
     color: #6b7280;
     font-size: 0.8rem;
+}
+
+/* Max incidents number input */
+.max-input {
+    background-image: none;
+    padding-right: 0.85rem;
+    width: 80px;
+    text-align: center;
+    -moz-appearance: textfield;
+}
+
+.max-input::-webkit-outer-spin-button,
+.max-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 /* ========== TYPE BUTTON AND PANEL ========== */
